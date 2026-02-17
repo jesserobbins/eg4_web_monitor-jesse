@@ -25,6 +25,7 @@ PARAM_FUNC_GREEN_EN = "FUNC_GREEN_EN"
 
 # Extended bit field parameter names (registers 179, 233)
 PARAM_FUNC_GRID_PEAK_SHAVING = "FUNC_GRID_PEAK_SHAVING"
+PARAM_FUNC_AC_COUPLE_EN = "FUNC_179_BIT11"  # Register 179, bit 11: AC coupling
 PARAM_FUNC_BATTERY_BACKUP_CTRL = "FUNC_BATTERY_BACKUP_CTRL"
 
 # Direct value parameter names
