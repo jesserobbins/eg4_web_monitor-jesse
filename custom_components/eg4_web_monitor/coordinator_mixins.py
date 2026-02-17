@@ -734,7 +734,11 @@ class DeviceProcessingMixin(_MixinBase):
             "consumption_power": "consumption_power",
             "inverter_power": "ac_power",
             "rectifier_power": "rectifier_power",
-            "ac_couple_power": "ac_couple_power",
+            # NOTE: ac_couple_power intentionally excluded from HTTP property map.
+            # The cloud API field acCouplePower returns cumulative energy (Wh),
+            # not instantaneous power (W). For local mode, ac_couple_power is
+            # set from inverter.ac_couple_power in coordinator_local.py which
+            # reads register 123 (generator_power proxy) — true instantaneous W.
             "generator_power": "generator_power",
             "eps_power": "eps_power",
             "eps_power_l1": "eps_power_l1",

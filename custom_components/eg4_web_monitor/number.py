@@ -30,6 +30,10 @@ from .const import (
     GRID_PEAK_SHAVING_POWER_STEP,
     PARAM_HOLD_AC_CHARGE_POWER,
     PARAM_HOLD_AC_CHARGE_SOC_LIMIT,
+    PARAM_HOLD_AC_COUPLE_END_SOC,
+    PARAM_HOLD_AC_COUPLE_END_VOLT,
+    PARAM_HOLD_AC_COUPLE_START_SOC,
+    PARAM_HOLD_AC_COUPLE_START_VOLT,
     PARAM_HOLD_CHARGE_CURRENT,
     PARAM_HOLD_CHG_POWER_PERCENT,
     PARAM_HOLD_DISCHARGE_CURRENT,
@@ -39,6 +43,10 @@ from .const import (
     PV_CHARGE_POWER_MAX,
     PV_CHARGE_POWER_MIN,
     PV_CHARGE_POWER_STEP,
+    REG_AC_COUPLE_END_SOC,
+    REG_AC_COUPLE_END_VOLT,
+    REG_AC_COUPLE_START_SOC,
+    REG_AC_COUPLE_START_VOLT,
     SOC_LIMIT_MAX,
     SOC_LIMIT_MIN,
     SOC_LIMIT_STEP,
@@ -291,6 +299,10 @@ async def async_setup_entry(
                         BatteryChargeCurrentNumber(coordinator, serial),
                         BatteryDischargeCurrentNumber(coordinator, serial),
                         GridPeakShavingPowerNumber(coordinator, serial),
+                        ACCoupleStartSOCNumber(coordinator, serial),
+                        ACCoupleEndSOCNumber(coordinator, serial),
+                        ACCoupleStartVoltageNumber(coordinator, serial),
+                        ACCoupleEndVoltageNumber(coordinator, serial),
                     ]
                 )
 
@@ -790,3 +802,254 @@ class BatteryDischargeCurrentNumber(EG4BaseNumberEntity):
             cloud_kwargs={"current_amps": int_value},
             label=f"battery discharge current to {int_value} A",
         )
+
+
+# ── AC Couple Number Entities (Registers 220-223) ────────────────────
+
+
+class _ACCoupleBaseNumber(EG4BaseNumberEntity):
+    """Base class for AC couple number entities (registers 220-223).
+
+    These registers are not mapped by pylxpweb's named parameter system,
+    so reads come from raw register values stored during parameter refresh,
+    and writes use coordinator.write_raw_register().
+    """
+
+    _param_key: str = ""
+    _register_address: int = 0
+
+    def _get_related_entity_types(self) -> tuple[type, ...]:
+        return (
+            ACCoupleStartSOCNumber,
+            ACCoupleEndSOCNumber,
+            ACCoupleStartVoltageNumber,
+            ACCoupleEndVoltageNumber,
+        )
+
+    async def _write_raw_register(self, value: float, label: str) -> None:
+        """Write AC couple parameter via raw register write."""
+        int_value = int(value)
+        _LOGGER.info("Setting %s for %s to %d", label, self.serial, int_value)
+        with optimistic_value_context(self, value):
+            if self.coordinator.has_local_transport(self.serial):
+                await self.coordinator.write_raw_register(
+                    self._register_address, int_value, serial=self.serial
+                )
+                await asyncio.sleep(0.5)
+            else:
+                raise HomeAssistantError(
+                    f"AC couple parameters require local transport (register {self._register_address})"
+                )
+            await self._refresh_related_entities()
+
+
+class ACCoupleStartSOCNumber(_ACCoupleBaseNumber):
+    """Number entity for AC Couple Start SOC (register 220).
+
+    Battery SOC threshold at which AC coupling activates.
+    """
+
+    _param_key = PARAM_HOLD_AC_COUPLE_START_SOC
+    _register_address = REG_AC_COUPLE_START_SOC
+
+    def __init__(self, coordinator: EG4DataUpdateCoordinator, serial: str) -> None:
+        """Initialize the number entity."""
+        super().__init__(coordinator, serial)
+        self._attr_name = "AC Couple Start SOC"
+        self._attr_unique_id = (
+            f"{self._clean_model}_{serial.lower()}_ac_couple_start_soc"
+        )
+        self._attr_native_min_value = 0
+        self._attr_native_max_value = 100
+        self._attr_native_step = 1
+        self._attr_native_unit_of_measurement = "%"
+        self._attr_icon = "mdi:solar-power-variant"
+        self._attr_native_precision = 0
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current AC couple start SOC."""
+        return self._read_param_value(
+            param_key=self._param_key,
+            value_min=0,
+            value_max=100,
+            params_first=True,
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set the AC couple start SOC."""
+        int_value = int(value)
+        if int_value < 0 or int_value > 100:
+            raise HomeAssistantError(
+                f"AC couple start SOC must be between 0-100%, got {int_value}"
+            )
+        await self._write_raw_register(value, "AC couple start SOC")
+
+
+class ACCoupleEndSOCNumber(_ACCoupleBaseNumber):
+    """Number entity for AC Couple End SOC (register 221).
+
+    Battery SOC threshold at which AC coupling deactivates.
+    """
+
+    _param_key = PARAM_HOLD_AC_COUPLE_END_SOC
+    _register_address = REG_AC_COUPLE_END_SOC
+
+    def __init__(self, coordinator: EG4DataUpdateCoordinator, serial: str) -> None:
+        """Initialize the number entity."""
+        super().__init__(coordinator, serial)
+        self._attr_name = "AC Couple End SOC"
+        self._attr_unique_id = (
+            f"{self._clean_model}_{serial.lower()}_ac_couple_end_soc"
+        )
+        self._attr_native_min_value = 0
+        self._attr_native_max_value = 100
+        self._attr_native_step = 1
+        self._attr_native_unit_of_measurement = "%"
+        self._attr_icon = "mdi:solar-power-variant"
+        self._attr_native_precision = 0
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current AC couple end SOC."""
+        return self._read_param_value(
+            param_key=self._param_key,
+            value_min=0,
+            value_max=100,
+            params_first=True,
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set the AC couple end SOC."""
+        int_value = int(value)
+        if int_value < 0 or int_value > 100:
+            raise HomeAssistantError(
+                f"AC couple end SOC must be between 0-100%, got {int_value}"
+            )
+        await self._write_raw_register(value, "AC couple end SOC")
+
+
+class ACCoupleStartVoltageNumber(_ACCoupleBaseNumber):
+    """Number entity for AC Couple Start Voltage (register 222).
+
+    Battery voltage threshold at which AC coupling activates.
+    Register stores value in 0.1V units (e.g., 520 = 52.0V).
+    """
+
+    _param_key = PARAM_HOLD_AC_COUPLE_START_VOLT
+    _register_address = REG_AC_COUPLE_START_VOLT
+
+    def __init__(self, coordinator: EG4DataUpdateCoordinator, serial: str) -> None:
+        """Initialize the number entity."""
+        super().__init__(coordinator, serial)
+        self._attr_name = "AC Couple Start Voltage"
+        self._attr_unique_id = (
+            f"{self._clean_model}_{serial.lower()}_ac_couple_start_voltage"
+        )
+        self._attr_native_min_value = 40.0
+        self._attr_native_max_value = 60.0
+        self._attr_native_step = 0.1
+        self._attr_native_unit_of_measurement = "V"
+        self._attr_icon = "mdi:solar-power-variant"
+        self._attr_native_precision = 1
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current AC couple start voltage (register in 0.1V units)."""
+        return self._read_param_value(
+            param_key=self._param_key,
+            value_min=40.0,
+            value_max=60.0,
+            as_float=True,
+            param_transform=lambda v: float(v) / 10.0,
+            params_first=True,
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set the AC couple start voltage (converts V to 0.1V register units)."""
+        if value < 40.0 or value > 60.0:
+            raise HomeAssistantError(
+                f"AC couple start voltage must be between 40.0-60.0V, got {value}"
+            )
+        # Convert display voltage to register value (0.1V units)
+        reg_value = int(value * 10)
+        _LOGGER.info(
+            "Setting AC couple start voltage for %s to %.1fV (reg=%d)",
+            self.serial,
+            value,
+            reg_value,
+        )
+        with optimistic_value_context(self, value):
+            if self.coordinator.has_local_transport(self.serial):
+                await self.coordinator.write_raw_register(
+                    self._register_address, reg_value, serial=self.serial
+                )
+                await asyncio.sleep(0.5)
+            else:
+                raise HomeAssistantError(
+                    "AC couple parameters require local transport"
+                )
+            await self._refresh_related_entities()
+
+
+class ACCoupleEndVoltageNumber(_ACCoupleBaseNumber):
+    """Number entity for AC Couple End Voltage (register 223).
+
+    Battery voltage threshold at which AC coupling deactivates.
+    Register stores value in 0.1V units (e.g., 580 = 58.0V).
+    """
+
+    _param_key = PARAM_HOLD_AC_COUPLE_END_VOLT
+    _register_address = REG_AC_COUPLE_END_VOLT
+
+    def __init__(self, coordinator: EG4DataUpdateCoordinator, serial: str) -> None:
+        """Initialize the number entity."""
+        super().__init__(coordinator, serial)
+        self._attr_name = "AC Couple End Voltage"
+        self._attr_unique_id = (
+            f"{self._clean_model}_{serial.lower()}_ac_couple_end_voltage"
+        )
+        self._attr_native_min_value = 40.0
+        self._attr_native_max_value = 60.0
+        self._attr_native_step = 0.1
+        self._attr_native_unit_of_measurement = "V"
+        self._attr_icon = "mdi:solar-power-variant"
+        self._attr_native_precision = 1
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current AC couple end voltage (register in 0.1V units)."""
+        return self._read_param_value(
+            param_key=self._param_key,
+            value_min=40.0,
+            value_max=60.0,
+            as_float=True,
+            param_transform=lambda v: float(v) / 10.0,
+            params_first=True,
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set the AC couple end voltage (converts V to 0.1V register units)."""
+        if value < 40.0 or value > 60.0:
+            raise HomeAssistantError(
+                f"AC couple end voltage must be between 40.0-60.0V, got {value}"
+            )
+        # Convert display voltage to register value (0.1V units)
+        reg_value = int(value * 10)
+        _LOGGER.info(
+            "Setting AC couple end voltage for %s to %.1fV (reg=%d)",
+            self.serial,
+            value,
+            reg_value,
+        )
+        with optimistic_value_context(self, value):
+            if self.coordinator.has_local_transport(self.serial):
+                await self.coordinator.write_raw_register(
+                    self._register_address, reg_value, serial=self.serial
+                )
+                await asyncio.sleep(0.5)
+            else:
+                raise HomeAssistantError(
+                    "AC couple parameters require local transport"
+                )
+            await self._refresh_related_entities()
