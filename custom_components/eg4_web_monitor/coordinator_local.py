@@ -190,8 +190,9 @@ class LocalTransportMixin(_MixinBase):
             device_data["sensors"]["rectifier_power"] = val
         if (val := inverter.power_to_user) is not None:
             device_data["sensors"]["grid_import_power"] = val
-        if (val := inverter.ac_couple_power) is not None:
-            device_data["sensors"]["ac_couple_power"] = val
+        # NOTE: inverter.ac_couple_power NOT used here — pylxpweb incorrectly
+        # proxies register 123 (generator_power). Real AC couple power is from
+        # input registers 206-207 which pylxpweb doesn't yet support.
         # EPS per-leg power (computed from total EPS + voltage ratio)
         device_data["sensors"]["eps_power_l1"] = inverter.eps_power_l1
         device_data["sensors"]["eps_power_l2"] = inverter.eps_power_l2
@@ -819,8 +820,7 @@ class LocalTransportMixin(_MixinBase):
                     sensors["rectifier_power"] = val
                 if (val := inverter.power_to_user) is not None:
                     sensors["grid_import_power"] = val
-                if (val := inverter.ac_couple_power) is not None:
-                    sensors["ac_couple_power"] = val
+                # NOTE: inverter.ac_couple_power NOT used — see static init note
                 # EPS per-leg power (computed from total EPS + voltage ratio)
                 sensors["eps_power_l1"] = inverter.eps_power_l1
                 sensors["eps_power_l2"] = inverter.eps_power_l2
