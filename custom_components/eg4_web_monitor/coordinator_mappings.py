@@ -179,6 +179,9 @@ INVERTER_RUNTIME_KEYS: frozenset[str] = frozenset(
         "grid_current_l3",
         "max_charge_current",
         "max_discharge_current",
+        "ac_couple_power",
+        "ac_couple_power_s",
+        "ac_couple_power_t",
     }
 )
 

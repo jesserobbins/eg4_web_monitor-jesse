@@ -63,6 +63,41 @@ _LOGGER = logging.getLogger(__name__)
 _COMPUTED_ENERGY_KEYS = frozenset({"consumption", "consumption_lifetime"})
 
 
+def _unsigned_to_signed16(val: int) -> int:
+    """Convert unsigned 16-bit register value to signed int16."""
+    return val - 65536 if val >= 32768 else val
+
+
+async def _read_ac_couple_power(
+    transport: Any, sensors: dict[str, Any]
+) -> None:
+    """Read AC couple power from input registers 206-207 (signed, watts).
+
+    These registers are not in pylxpweb's standard input register groups,
+    so we read them directly via the transport's _read_input_registers().
+    """
+    read_fn = getattr(transport, "_read_input_registers", None)
+    if read_fn is None:
+        return
+
+    try:
+        regs = await read_fn(206, 2)
+        if regs and len(regs) >= 2:
+            power_s = _unsigned_to_signed16(regs[0])
+            power_t = _unsigned_to_signed16(regs[1])
+            sensors["ac_couple_power_s"] = power_s
+            sensors["ac_couple_power_t"] = power_t
+            sensors["ac_couple_power"] = power_s + power_t
+            _LOGGER.debug(
+                "AC couple power: S=%sW, T=%sW, total=%sW",
+                power_s,
+                power_t,
+                power_s + power_t,
+            )
+    except Exception as err:
+        _LOGGER.debug("AC couple power registers 206-207 read failed: %s", err)
+
+
 class LocalTransportMixin(_MixinBase):
     """Mixin handling local transport operations for the coordinator."""
 
@@ -90,7 +125,8 @@ class LocalTransportMixin(_MixinBase):
                 (105, 2),  # On-grid SOC cutoff (105-106)
                 (110, 1),  # System function register (bit fields)
                 (125, 1),  # Off-grid SOC cutoff (HOLD_SOC_LOW_LIMIT_EPS_DISCHG)
-                (179, 1),  # Extended functions (FUNC_GRID_PEAK_SHAVING, etc.)
+                (179, 1),  # Extended functions (FUNC_GRID_PEAK_SHAVING, AC coupling)
+                (220, 4),  # AC couple parameters (start SOC, end SOC, start V, end V)
                 (227, 1),  # System charge SOC limit (HOLD_SYSTEM_CHARGE_SOC_LIMIT)
                 (231, 2),  # Grid peak shaving power (_12K_HOLD_GRID_PEAK_SHAVING_POWER)
                 (233, 1),  # Extended functions 2 (FUNC_BATTERY_BACKUP_CTRL, etc.)
@@ -106,6 +142,29 @@ class LocalTransportMixin(_MixinBase):
                         start,
                         start + count - 1,
                         range_err,
+                    )
+
+            # AC couple parameters (regs 220-223) may not be named by pylxpweb.
+            # Fall back to raw register read and map manually.
+            _AC_COUPLE_PARAM_MAP = {
+                220: "HOLD_AC_COUPLE_START_SOC",
+                221: "HOLD_AC_COUPLE_END_SOC",
+                222: "HOLD_AC_COUPLE_START_VOLT",
+                223: "HOLD_AC_COUPLE_END_VOLT",
+            }
+            if not any(k in params for k in _AC_COUPLE_PARAM_MAP.values()):
+                try:
+                    raw_regs = await transport.read_parameters(220, 4)
+                    for addr, param_name in _AC_COUPLE_PARAM_MAP.items():
+                        if addr in raw_regs:
+                            params[param_name] = raw_regs[addr]
+                    _LOGGER.debug(
+                        "AC couple params (raw read): %s",
+                        {k: v for k, v in params.items() if k.startswith("HOLD_AC_COUPLE")},
+                    )
+                except Exception as ac_err:
+                    _LOGGER.debug(
+                        "AC couple param registers 220-223 read failed: %s", ac_err
                     )
 
             _LOGGER.debug("Read %d parameters from Modbus registers", len(params))
@@ -135,7 +194,7 @@ class LocalTransportMixin(_MixinBase):
 
         return params
 
-    def _build_local_device_data(
+    async def _build_local_device_data(
         self,
         inverter: BaseInverter,
         serial: str,
@@ -190,9 +249,11 @@ class LocalTransportMixin(_MixinBase):
             device_data["sensors"]["rectifier_power"] = val
         if (val := inverter.power_to_user) is not None:
             device_data["sensors"]["grid_import_power"] = val
-        # NOTE: inverter.ac_couple_power NOT used here — pylxpweb incorrectly
-        # proxies register 123 (generator_power). Real AC couple power is from
-        # input registers 206-207 which pylxpweb doesn't yet support.
+        # AC couple power — direct register read (206-207)
+        static_transport = getattr(inverter, "_transport", None)
+        if static_transport:
+            await _read_ac_couple_power(static_transport, device_data["sensors"])
+
         # EPS per-leg power (computed from total EPS + voltage ratio)
         device_data["sensors"]["eps_power_l1"] = inverter.eps_power_l1
         device_data["sensors"]["eps_power_l2"] = inverter.eps_power_l2
@@ -291,7 +352,7 @@ class LocalTransportMixin(_MixinBase):
                     f"Failed to read runtime data from {transport_name}"
                 )
 
-            device_data = self._build_local_device_data(
+            device_data = await self._build_local_device_data(
                 inverter=inverter,
                 serial=serial,
                 model=model,
@@ -820,7 +881,11 @@ class LocalTransportMixin(_MixinBase):
                     sensors["rectifier_power"] = val
                 if (val := inverter.power_to_user) is not None:
                     sensors["grid_import_power"] = val
-                # NOTE: inverter.ac_couple_power NOT used — see static init note
+                # AC couple power — direct register read (206-207)
+                transport_obj = getattr(inverter, "_transport", None)
+                if transport_obj:
+                    await _read_ac_couple_power(transport_obj, sensors)
+
                 # EPS per-leg power (computed from total EPS + voltage ratio)
                 sensors["eps_power_l1"] = inverter.eps_power_l1
                 sensors["eps_power_l2"] = inverter.eps_power_l2
@@ -828,6 +893,10 @@ class LocalTransportMixin(_MixinBase):
                 # Add last_polled timestamp so users can see when data was last fetched
                 # (not just when it last changed)
                 sensors["last_polled"] = dt_util.utcnow()
+
+                # Alias R-phase voltages to common names for non-three-phase
+                # (grid_voltage_r -> grid_voltage, eps_voltage_r -> eps_voltage)
+                alias_common_voltage_sensors(sensors, features)
 
                 _LOGGER.debug(
                     "LOCAL: Computed sensors for %s: consumption=%s, total_load=%s, "

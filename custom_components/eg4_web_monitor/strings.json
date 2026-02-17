@@ -555,6 +555,12 @@
       "ac_couple_power": {
         "name": "AC Couple Power"
       },
+      "ac_couple_power_s": {
+        "name": "AC Couple Power S-Phase"
+      },
+      "ac_couple_power_t": {
+        "name": "AC Couple Power T-Phase"
+      },
       "bus1_voltage": {
         "name": "Bus 1 Voltage"
       },
@@ -632,6 +638,18 @@
       },
       "soc_cutoff": {
         "name": "SOC Cut-Off"
+      },
+      "ac_couple_start_soc": {
+        "name": "AC Couple Start SOC"
+      },
+      "ac_couple_end_soc": {
+        "name": "AC Couple End SOC"
+      },
+      "ac_couple_start_voltage": {
+        "name": "AC Couple Start Voltage"
+      },
+      "ac_couple_end_voltage": {
+        "name": "AC Couple End Voltage"
       }
     },
     "button": {
