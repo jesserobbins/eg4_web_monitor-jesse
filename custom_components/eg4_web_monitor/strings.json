@@ -561,6 +561,9 @@
       "ac_couple_power_t": {
         "name": "AC Couple Power T-Phase"
       },
+      "ac_input_type": {
+        "name": "AC Input Type"
+      },
       "bus1_voltage": {
         "name": "Bus 1 Voltage"
       },

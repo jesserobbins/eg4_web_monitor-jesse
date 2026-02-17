@@ -182,6 +182,7 @@ INVERTER_RUNTIME_KEYS: frozenset[str] = frozenset(
         "ac_couple_power",
         "ac_couple_power_s",
         "ac_couple_power_t",
+        "ac_input_type",
     }
 )
 

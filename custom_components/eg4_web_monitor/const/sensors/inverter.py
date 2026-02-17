@@ -125,6 +125,11 @@ SENSOR_TYPES = {
         "state_class": "measurement",
         "icon": "mdi:solar-power-variant",
     },
+    "ac_input_type": {
+        "name": "AC Input Type",
+        "icon": "mdi:power-plug",
+        "entity_category": EntityCategory.DIAGNOSTIC,
+    },
     "eps_power": {
         "name": "EPS Power",
         "unit": UnitOfPower.WATT,

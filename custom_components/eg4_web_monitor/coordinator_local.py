@@ -98,6 +98,34 @@ async def _read_ac_couple_power(
         _LOGGER.debug("AC couple power registers 206-207 read failed: %s", err)
 
 
+async def _read_ac_input_type(
+    transport: Any, sensors: dict[str, Any]
+) -> None:
+    """Read AC input type from input register 77 (bit 0: 0=Grid, 1=Generator).
+
+    Register 77 is in the temperature group (64-79) but pylxpweb removed the
+    ac_input_type property as unreliable. We read it directly.
+    """
+    read_fn = getattr(transport, "_read_input_registers", None)
+    if read_fn is None:
+        return
+
+    try:
+        regs = await read_fn(77, 1)
+        if regs and len(regs) >= 1:
+            raw_value = regs[0]
+            ac_input_type = raw_value & 1  # bit 0: 0=Grid, 1=Generator
+            sensors["ac_input_type"] = "Generator" if ac_input_type == 1 else "Grid"
+            _LOGGER.debug(
+                "AC input type: reg77=%d, bit0=%d (%s)",
+                raw_value,
+                ac_input_type,
+                sensors["ac_input_type"],
+            )
+    except Exception as err:
+        _LOGGER.debug("AC input type register 77 read failed: %s", err)
+
+
 class LocalTransportMixin(_MixinBase):
     """Mixin handling local transport operations for the coordinator."""
 
@@ -249,10 +277,11 @@ class LocalTransportMixin(_MixinBase):
             device_data["sensors"]["rectifier_power"] = val
         if (val := inverter.power_to_user) is not None:
             device_data["sensors"]["grid_import_power"] = val
-        # AC couple power — direct register read (206-207)
+        # AC couple registers — direct register reads
         static_transport = getattr(inverter, "_transport", None)
         if static_transport:
             await _read_ac_couple_power(static_transport, device_data["sensors"])
+            await _read_ac_input_type(static_transport, device_data["sensors"])
 
         # EPS per-leg power (computed from total EPS + voltage ratio)
         device_data["sensors"]["eps_power_l1"] = inverter.eps_power_l1
@@ -881,10 +910,11 @@ class LocalTransportMixin(_MixinBase):
                     sensors["rectifier_power"] = val
                 if (val := inverter.power_to_user) is not None:
                     sensors["grid_import_power"] = val
-                # AC couple power — direct register read (206-207)
+                # AC couple registers — direct register reads
                 transport_obj = getattr(inverter, "_transport", None)
                 if transport_obj:
                     await _read_ac_couple_power(transport_obj, sensors)
+                    await _read_ac_input_type(transport_obj, sensors)
 
                 # EPS per-leg power (computed from total EPS + voltage ratio)
                 sensors["eps_power_l1"] = inverter.eps_power_l1
