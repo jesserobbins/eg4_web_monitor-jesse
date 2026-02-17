@@ -49,6 +49,13 @@ WORKING_MODES = {
         "icon": "mdi:home-battery",
         "entity_category": EntityCategory.CONFIG,
     },
+    "ac_couple_mode": {
+        "name": "AC Coupling Mode",
+        "param": "FUNC_179_BIT11",
+        "description": "AC coupling for external inverter power sources",
+        "icon": "mdi:solar-power-variant",
+        "entity_category": EntityCategory.CONFIG,
+    },
 }
 
 # =============================================================================
@@ -63,4 +70,5 @@ FUNCTION_PARAM_MAPPING = {
     "FUNC_FORCED_CHG_EN": "FUNC_FORCED_CHG_EN",
     "FUNC_FORCED_DISCHG_EN": "FUNC_FORCED_DISCHG_EN",
     "FUNC_SET_TO_STANDBY": "FUNC_SET_TO_STANDBY",
+    "FUNC_179_BIT11": "FUNC_179_BIT11",
 }
