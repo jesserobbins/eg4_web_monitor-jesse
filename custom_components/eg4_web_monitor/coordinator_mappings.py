@@ -581,10 +581,9 @@ def _build_runtime_sensor_mapping(runtime_data: Any) -> dict[str, Any]:
         # battery_bank_charge_rate.
         "max_charge_current": runtime_data.bms_charge_current_limit,
         "max_discharge_current": runtime_data.bms_discharge_current_limit,
-        # AC coupling power. pylxpweb uses generator_power (reg 123) as the local
-        # proxy for ac_couple_power — the generator port carries AC couple flow.
-        # ac_couple_power_s/t come from direct reads of registers 206-207 in
-        # coordinator_local.py and may override ac_couple_power if available.
+        # AC coupling power. Seeded from generator_power (reg 123) as a fallback;
+        # coordinator_local.py overrides this with a direct read of register 153
+        # (I_AC_COUPLE_POWER, 0.1W scale) when available.
         "ac_couple_power": runtime_data.generator_power,
         "ac_couple_power_s": None,
         "ac_couple_power_t": None,

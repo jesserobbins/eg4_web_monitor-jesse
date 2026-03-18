@@ -77,31 +77,24 @@ def _unsigned_to_signed16(val: int) -> int:
 async def _read_ac_couple_power(
     transport: Any, sensors: dict[str, Any]
 ) -> None:
-    """Read AC couple power from input registers 206-207 (signed, watts).
+    """Read AC couple power from input register 153 (signed, 0.1W resolution).
 
-    These registers are not in pylxpweb's standard input register groups,
-    so we read them directly via the transport's _read_input_registers().
+    Register 153 (I_AC_COUPLE_POWER) is not in pylxpweb's standard input
+    register groups, so we read it directly. Range: -32768–32767 raw,
+    scaled by 0.1 to get watts.
     """
     read_fn = getattr(transport, "_read_input_registers", None)
     if read_fn is None:
         return
 
     try:
-        regs = await read_fn(206, 2)
-        if regs and len(regs) >= 2:
-            power_s = _unsigned_to_signed16(regs[0])
-            power_t = _unsigned_to_signed16(regs[1])
-            sensors["ac_couple_power_s"] = power_s
-            sensors["ac_couple_power_t"] = power_t
-            sensors["ac_couple_power"] = power_s + power_t
-            _LOGGER.debug(
-                "AC couple power: S=%sW, T=%sW, total=%sW",
-                power_s,
-                power_t,
-                power_s + power_t,
-            )
+        regs = await read_fn(153, 1)
+        if regs and len(regs) >= 1:
+            power = _unsigned_to_signed16(regs[0]) * 0.1
+            sensors["ac_couple_power"] = power
+            _LOGGER.debug("AC couple power: reg153=%s raw -> %.1fW", regs[0], power)
     except Exception as err:
-        _LOGGER.debug("AC couple power registers 206-207 read failed: %s", err)
+        _LOGGER.debug("AC couple power register 153 read failed: %s", err)
 
 
 async def _read_ac_input_type(
