@@ -581,15 +581,24 @@ def _build_runtime_sensor_mapping(runtime_data: Any) -> dict[str, Any]:
         # battery_bank_charge_rate.
         "max_charge_current": runtime_data.bms_charge_current_limit,
         "max_discharge_current": runtime_data.bms_discharge_current_limit,
-        # AC coupling power (local-only, computed by _read_ac_couple_power in
-        # coordinator_local.py from registers 179/233). Not available in HTTP
-        # mode. Always include keys so entities are created during static phase.
-        "ac_couple_power": None,
+        # AC coupling power. pylxpweb uses generator_power (reg 123) as the local
+        # proxy for ac_couple_power — the generator port carries AC couple flow.
+        # ac_couple_power_s/t come from direct reads of registers 206-207 in
+        # coordinator_local.py and may override ac_couple_power if available.
+        "ac_couple_power": runtime_data.generator_power,
         "ac_couple_power_s": None,
         "ac_couple_power_t": None,
-        # AC input type (local-only, read by _read_ac_input_type from register 77
-        # bit 0). Not available in HTTP mode.
-        "ac_input_type": None,
+        # AC input type (register 77, bit 0) is read as part of the standard
+        # temperatures group (64-79). Convert int to string label here; the
+        # direct _read_ac_input_type call in coordinator_local.py may override.
+        "ac_input_type": (
+            "Generator"
+            if runtime_data.ac_input_type is not None
+            and (runtime_data.ac_input_type & 1)
+            else "Grid"
+            if runtime_data.ac_input_type is not None
+            else None
+        ),
     }
 
 
