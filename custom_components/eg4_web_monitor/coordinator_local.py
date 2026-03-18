@@ -17,6 +17,7 @@ from pylxpweb.devices.inverters.base import BaseInverter
 from pylxpweb.exceptions import LuxpowerDeviceError
 
 from .const import (
+    CONF_GRID_TYPE,
     CONF_INCLUDE_AC_COUPLE_PV,
     CONNECTION_TYPE_DONGLE,
     CONNECTION_TYPE_LOCAL,
@@ -27,6 +28,7 @@ from .const import (
     DEFAULT_MODBUS_TIMEOUT,
     DEFAULT_MODBUS_UNIT_ID,
     DOMAIN,
+    GRID_TYPE_SPLIT_PHASE,
     INVERTER_FAMILY_DEFAULT_MODELS,
     MANUFACTURER,
 )
@@ -37,8 +39,7 @@ from .coordinator_mixins import (
 )
 from .coordinator_mappings import (
     ALL_INVERTER_SENSOR_KEYS,
-    GRIDBOSS_SENSOR_KEYS,
-    GRIDBOSS_SMART_PORT_POWER_KEYS,
+    GRIDBOSS_STATIC_ENTITY_KEYS,
     PARALLEL_GROUP_GRIDBOSS_KEYS,
     PARALLEL_GROUP_SENSOR_KEYS,
     _build_battery_bank_sensor_mapping,
@@ -61,6 +62,11 @@ _LOGGER = logging.getLogger(__name__)
 # timing artifacts (not corruption).  Clamped to prevent HA
 # total_increasing warnings.
 _COMPUTED_ENERGY_KEYS = frozenset({"consumption", "consumption_lifetime"})
+
+# Minimum battery serial length to consider valid.  Shorter serials are
+# likely truncated register reads from incomplete CAN bus transfers and
+# are skipped to avoid creating phantom battery entities.
+_MIN_SERIAL_LENGTH = 10
 
 
 def _unsigned_to_signed16(val: int) -> int:
@@ -129,6 +135,119 @@ async def _read_ac_input_type(
 class LocalTransportMixin(_MixinBase):
     """Mixin handling local transport operations for the coordinator."""
 
+    def _merge_round_robin_batteries(
+        self,
+        inverter_serial: str,
+        transport_batteries: list[Any],
+    ) -> dict[str, dict[str, Any]]:
+        """Merge transport battery slot data into the round-robin cache.
+
+        Some inverter firmware rotates which physical batteries appear in the
+        fixed Modbus register slots (5002+) on each CAN bus poll.  This method
+        accumulates readings keyed by battery serial so that all batteries
+        eventually appear as HA entities.
+
+        Args:
+            inverter_serial: Parent inverter serial number.
+            transport_batteries: List of BatteryData from current poll.
+
+        Returns:
+            Full battery dict for device_data["batteries"], containing all
+            batteries seen so far (not just this poll cycle).
+        """
+        if inverter_serial not in self._battery_rr_cache:
+            self._battery_rr_cache[inverter_serial] = {}
+            self._battery_serial_to_key[inverter_serial] = {}
+            self._battery_next_index[inverter_serial] = 1
+
+        cache = self._battery_rr_cache[inverter_serial]
+        key_map = self._battery_serial_to_key[inverter_serial]
+
+        poll_serials: list[str] = []
+        poll_slots_skipped = 0
+        new_serials: list[str] = []
+
+        for batt in transport_batteries:
+            # Skip batteries with no CAN bus data
+            if batt.voltage is None and batt.soc is None:
+                poll_slots_skipped += 1
+                _LOGGER.debug(
+                    "RR [%s] slot %d: skipped (no CAN data, voltage=%s soc=%s)",
+                    inverter_serial,
+                    getattr(batt, "battery_index", -1),
+                    batt.voltage,
+                    batt.soc,
+                )
+                continue
+
+            bat_serial: str = getattr(batt, "serial_number", "") or ""
+            if not bat_serial:
+                # No serial → fall back to slot-index keying (pre-round-robin
+                # firmware or battery without CAN serial).
+                fallback_key = f"{inverter_serial}-{batt.battery_index + 1:02d}"
+                cache[fallback_key] = _build_individual_battery_mapping(batt)
+                _LOGGER.debug(
+                    "RR [%s] slot %d: no serial, fallback key %s (V=%.1f SoC=%s)",
+                    inverter_serial,
+                    getattr(batt, "battery_index", -1),
+                    fallback_key,
+                    batt.voltage or 0.0,
+                    batt.soc,
+                )
+                continue
+
+            # Skip truncated serials from incomplete register reads.
+            # e.g. "Batter" or "y_ID_03" instead of "Battery_ID_03".
+            # The real battery will appear with its full serial on a
+            # future rotation cycle.
+            if len(bat_serial) < _MIN_SERIAL_LENGTH:
+                poll_slots_skipped += 1
+                _LOGGER.debug(
+                    "RR [%s] slot %d: skipping truncated serial %r (len=%d < %d)",
+                    inverter_serial,
+                    getattr(batt, "battery_index", -1),
+                    bat_serial,
+                    len(bat_serial),
+                    _MIN_SERIAL_LENGTH,
+                )
+                continue
+
+            poll_serials.append(bat_serial)
+
+            # Assign a stable battery_key on first encounter
+            if bat_serial not in key_map:
+                idx = self._battery_next_index[inverter_serial]
+                key_map[bat_serial] = f"{inverter_serial}-{idx:02d}"
+                self._battery_next_index[inverter_serial] = idx + 1
+                new_serials.append(bat_serial)
+
+            battery_key = key_map[bat_serial]
+            cache[battery_key] = _build_individual_battery_mapping(batt)
+            _LOGGER.debug(
+                "RR [%s] slot %d: serial=%s → key=%s (V=%.1f SoC=%d%%)",
+                inverter_serial,
+                getattr(batt, "battery_index", -1),
+                bat_serial,
+                battery_key,
+                batt.voltage or 0.0,
+                batt.soc or 0,
+            )
+
+        _LOGGER.debug(
+            "RR [%s] poll summary: %d responded, %d skipped, "
+            "%d new serials, %d total cached | "
+            "this_poll=%s | all_known=%s",
+            inverter_serial,
+            len(poll_serials),
+            poll_slots_skipped,
+            len(new_serials),
+            len(cache),
+            poll_serials,
+            list(key_map.keys()),
+        )
+
+        return dict(cache)
+
     async def _read_modbus_parameters(self, transport: Any) -> dict[str, Any]:
         """Read configuration parameters using library's named parameter mapping.
 
@@ -147,7 +266,10 @@ class LocalTransportMixin(_MixinBase):
             # Read all parameter ranges using library's register-to-name mapping
             # The library handles bit field extraction automatically
             register_ranges = [
-                (21, 1),  # Function enable register (bit fields)
+                (
+                    20,
+                    3,
+                ),  # PV input mode (20), function enable (21), PV start voltage (22)
                 (64, 16),  # Power settings + AC charge/discharge (64-79)
                 (101, 2),  # Charge/discharge current limits (101-102)
                 (105, 2),  # On-grid SOC cutoff (105-106)
@@ -269,8 +391,6 @@ class LocalTransportMixin(_MixinBase):
         # Add computed sensors from inverter properties (for deprecated code path)
         if (val := inverter.consumption_power) is not None:
             device_data["sensors"]["consumption_power"] = val
-        if (val := inverter.total_load_power) is not None:
-            device_data["sensors"]["total_load_power"] = val
         if (val := inverter.battery_power) is not None:
             device_data["sensors"]["battery_power"] = val
         if (val := inverter.rectifier_power) is not None:
@@ -282,10 +402,6 @@ class LocalTransportMixin(_MixinBase):
         if static_transport:
             await _read_ac_couple_power(static_transport, device_data["sensors"])
             await _read_ac_input_type(static_transport, device_data["sensors"])
-
-        # EPS per-leg power (computed from total EPS + voltage ratio)
-        device_data["sensors"]["eps_power_l1"] = inverter.eps_power_l1
-        device_data["sensors"]["eps_power_l2"] = inverter.eps_power_l2
 
         transport = getattr(inverter, "_transport", None)
         if transport and hasattr(transport, "host"):
@@ -672,6 +788,10 @@ class LocalTransportMixin(_MixinBase):
                 if not transport.is_connected:
                     await transport.connect()
 
+                # Propagate split-phase config for per-leg power fallback
+                grid_type = config.get(CONF_GRID_TYPE)
+                transport.split_phase = grid_type == GRID_TYPE_SPLIT_PHASE
+
                 if is_gridboss:
                     _LOGGER.debug(
                         "LOCAL: Creating GridBOSS/MIDDevice from %s transport for %s",
@@ -865,29 +985,66 @@ class LocalTransportMixin(_MixinBase):
 
                 battery_data = inverter._transport_battery
                 if battery_data:
-                    device_data["sensors"].update(
-                        _build_battery_bank_sensor_mapping(battery_data)
-                    )
-                    # Compute battery bank charge/discharge rate from merged sensor data
-                    compute_bank_charge_rate(device_data["sensors"])
+                    # Skip battery bank creation when battery_count is 0.
+                    # In parallel systems with shared batteries, the secondary
+                    # inverter reports battery_count=0 at reg 96 because the
+                    # CAN bus is wired only to the primary.  Per-inverter
+                    # sensors (battery_voltage, battery_current, state_of_charge)
+                    # from runtime registers still report accurate values.
+                    # This matches CLOUD path behavior where the API returns
+                    # totalNumber=0 for secondary inverters (issue #169).
+                    bank_count = battery_data.battery_count or 0
 
-                    if hasattr(battery_data, "batteries") and battery_data.batteries:
-                        for batt in battery_data.batteries:
-                            # Skip batteries with no CAN bus data (Modbus
-                            # exception on 5002+ registers).  BMS aggregate
-                            # data (regs 80-112) is always reliable via
-                            # battery_bank sensors.
-                            if batt.voltage is None and batt.soc is None:
-                                continue
-                            battery_key = f"{serial}-{batt.battery_index + 1:02d}"
-                            device_data["batteries"][battery_key] = (
-                                _build_individual_battery_mapping(batt)
+                    if bank_count == 0:
+                        if serial not in self._shared_battery_logged:
+                            _LOGGER.info(
+                                "LOCAL: Skipping battery bank for %s "
+                                "(battery_count=0, shared battery secondary)",
+                                serial,
                             )
-                        _LOGGER.debug(
-                            "LOCAL: Added %d individual batteries for %s",
-                            len(device_data["batteries"]),
-                            serial,
+                            self._shared_battery_logged.add(serial)
+                    else:
+                        device_data["sensors"].update(
+                            _build_battery_bank_sensor_mapping(battery_data)
                         )
+                        # Compute battery bank charge/discharge rate
+                        compute_bank_charge_rate(device_data["sensors"])
+
+                        if (
+                            hasattr(battery_data, "batteries")
+                            and battery_data.batteries
+                        ):
+                            # Round-robin merge: some firmware rotates which
+                            # physical batteries appear in the fixed register
+                            # slots.  Accumulate by battery serial so all
+                            # batteries eventually appear as entities.
+                            device_data["batteries"] = (
+                                self._merge_round_robin_batteries(
+                                    serial, list(battery_data.batteries)
+                                )
+                            )
+                            _LOGGER.debug(
+                                "LOCAL: %d individual batteries for %s "
+                                "(%d this poll, %d cached)",
+                                len(device_data["batteries"]),
+                                serial,
+                                len(battery_data.batteries),
+                                len(self._battery_rr_cache.get(serial, {})),
+                            )
+                        elif serial in self._battery_rr_cache:
+                            # Individual battery registers unavailable this poll
+                            # (e.g. transient read failure).  Serve cached data
+                            # so entities stay available rather than going
+                            # unavailable until the next successful read.
+                            device_data["batteries"] = dict(
+                                self._battery_rr_cache[serial]
+                            )
+                            _LOGGER.debug(
+                                "LOCAL: %s serving %d individual batteries "
+                                "from cache (no battery data this poll)",
+                                serial,
+                                len(device_data["batteries"]),
+                            )
 
                 device_data["sensors"]["firmware_version"] = firmware_version
                 device_data["sensors"]["connection_transport"] = _get_transport_label(
@@ -902,8 +1059,6 @@ class LocalTransportMixin(_MixinBase):
                 # Computed power sensors from pylxpweb library
                 if (val := inverter.consumption_power) is not None:
                     sensors["consumption_power"] = val
-                if (val := inverter.total_load_power) is not None:
-                    sensors["total_load_power"] = val
                 if (val := inverter.battery_power) is not None:
                     sensors["battery_power"] = val
                 if (val := inverter.rectifier_power) is not None:
@@ -916,10 +1071,6 @@ class LocalTransportMixin(_MixinBase):
                     await _read_ac_couple_power(transport_obj, sensors)
                     await _read_ac_input_type(transport_obj, sensors)
 
-                # EPS per-leg power (computed from total EPS + voltage ratio)
-                sensors["eps_power_l1"] = inverter.eps_power_l1
-                sensors["eps_power_l2"] = inverter.eps_power_l2
-
                 # Add last_polled timestamp so users can see when data was last fetched
                 # (not just when it last changed)
                 sensors["last_polled"] = dt_util.utcnow()
@@ -929,11 +1080,10 @@ class LocalTransportMixin(_MixinBase):
                 alias_common_voltage_sensors(sensors, features)
 
                 _LOGGER.debug(
-                    "LOCAL: Computed sensors for %s: consumption=%s, total_load=%s, "
+                    "LOCAL: Computed sensors for %s: consumption=%s, "
                     "battery=%s, rectifier=%s, grid_import=%s",
                     serial,
                     sensors.get("consumption_power"),
-                    sensors.get("total_load_power"),
                     sensors.get("battery_power"),
                     sensors.get("rectifier_power"),
                     sensors.get("grid_import_power"),
@@ -1100,10 +1250,7 @@ class LocalTransportMixin(_MixinBase):
             firmware = config.get("firmware_version", "Unknown")
 
             if is_gridboss:
-                # Exclude smart port power keys from static creation — they are
-                # added dynamically by _filter_unused_smart_port_sensors() based
-                # on actual port status so only active ports get entities.
-                sensor_keys = GRIDBOSS_SENSOR_KEYS - GRIDBOSS_SMART_PORT_POWER_KEYS
+                sensor_keys = GRIDBOSS_STATIC_ENTITY_KEYS
                 device_type = "gridboss"
             else:
                 sensor_keys = ALL_INVERTER_SENSOR_KEYS
@@ -1601,7 +1748,9 @@ class LocalTransportMixin(_MixinBase):
                     total_battery_voltage / voltage_count, 1
                 )
 
-            # Aggregate battery_bank_current from member inverters
+            # Aggregate battery_bank_current from member inverters.
+            # Secondaries with battery_count=0 have no battery_bank_* sensors,
+            # so they naturally contribute nothing to the sum.
             total_battery_current = 0.0
             has_battery_current = False
             for _, dd in group_devices:
@@ -1612,7 +1761,7 @@ class LocalTransportMixin(_MixinBase):
             if has_battery_current:
                 group_sensors["parallel_battery_current"] = total_battery_current
 
-            # Sum battery_bank_count from all member devices
+            # Sum battery_bank_count from all member devices.
             # Use battery_bank_count from sensors (from Modbus register 96 or cloud batParallelNum)
             # rather than counting batteries dict entries, which may be empty if CAN bus
             # communication with battery BMS isn't established (common with LXP-EU devices)
@@ -1695,7 +1844,7 @@ class LocalTransportMixin(_MixinBase):
                     for port_num in range(1, 5):  # Ports 1-4
                         status_key = f"smart_port{port_num}_status"
                         status = gb_sensors.get(status_key)
-                        if status == 2:  # AC Couple mode
+                        if status == "ac_couple":  # AC Couple mode
                             l1_power = (
                                 gb_sensors.get(f"ac_couple{port_num}_power_l1") or 0
                             )
@@ -1818,22 +1967,38 @@ class LocalTransportMixin(_MixinBase):
             # Configure each inverter with a local transport:
             # 1. Propagate data validation (prevents GridBOSS data spikes)
             # 2. Align cache TTLs with coordinator's user-configured intervals
-            # 3. Force initial transport read so _transport_runtime is
-            #    populated on the first _process_station_data() call
+            # 3. Schedule background buffer drain (see _drain_modbus_buffers)
+            #
+            # NOTE: We intentionally do NOT await inverter.refresh() here.
+            # asyncio.wait_for() with Python 3.11 does NOT interrupt in-flight
+            # pymodbus reads — it waits for the inner task to finish before
+            # raising TimeoutError. On HA restart, the Waveshare gateway has
+            # stale RS485 responses buffered from the previous session, causing
+            # reads to fail for 3–5 minutes. A blocking refresh here hangs
+            # async_config_entry_first_refresh() for that entire duration,
+            # causing HA's setup timeout to fire and cancel entity setup.
+            # Instead, a background task drains the buffer after setup returns.
             validation_enabled = self._data_validation_enabled
+            modbus_inverters: list[Any] = []
             for inverter in self.station.all_inverters:
                 transport = getattr(inverter, "_transport", None)
                 if transport is not None:
                     inverter.validate_data = validation_enabled
+                    # Propagate split-phase config for per-leg power fallback
+                    grid_type = self._get_device_grid_type(inverter.serial_number)
+                    transport.split_phase = grid_type == GRID_TYPE_SPLIT_PHASE
                     tt = getattr(transport, "transport_type", "modbus_tcp")
                     self._align_inverter_cache_ttls(inverter, tt)
-                    try:
-                        await inverter.refresh(force=True)
-                    except Exception:
-                        _LOGGER.warning(
-                            "HYBRID: forced transport read failed for %s",
-                            inverter.serial_number,
-                        )
+                    if tt == "modbus_tcp":
+                        modbus_inverters.append(inverter)
+
+            if modbus_inverters:
+                task = self.hass.async_create_task(
+                    self._drain_modbus_buffers(modbus_inverters)
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._remove_task_from_set)
+                task.add_done_callback(self._log_task_exception)
 
             # Propagate validation to MID devices.  set_max_system_power()
             # cannot be called here because inverter features have not been
@@ -1856,6 +2021,44 @@ class LocalTransportMixin(_MixinBase):
             # Don't mark as attached so we can retry on next update
             self._local_transports_attached = False
 
+    async def _drain_modbus_buffers(self, inverters: list[Any]) -> None:
+        """Background task: drain stale Waveshare RS485 buffer after HA restart.
+
+        On restart, the Waveshare RS485-to-Ethernet gateway may have buffered
+        stale responses from the previous HA session. These stale responses
+        arrive at pymodbus as mismatched TID/function-code errors, causing
+        read failures until the buffer is consumed.
+
+        asyncio.wait_for() does NOT interrupt in-flight pymodbus reads in
+        Python 3.11, so this cannot block setup. Instead, it runs as a
+        background task that drains the buffer after setup returns — reads
+        fail quickly via pymodbus's own per-read timeout, consuming one
+        stale response per attempt until the buffer is empty.
+
+        The per-read timeout * retries * register groups determines the
+        maximum drain time (typically <60 s for a Waveshare with a few
+        stale frames). Failures are expected and ignored; the regular poll
+        cycle will populate _transport_runtime once reads succeed.
+        """
+        await asyncio.sleep(2)  # Let setup and first static refresh complete
+        for inverter in inverters:
+            try:
+                _LOGGER.debug(
+                    "Draining Modbus buffer for %s after restart",
+                    inverter.serial_number,
+                )
+                await inverter.refresh(force=True)
+                _LOGGER.debug(
+                    "Modbus buffer drained successfully for %s",
+                    inverter.serial_number,
+                )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Modbus buffer drain failed for %s (expected on restart): %s",
+                    inverter.serial_number,
+                    err,
+                )
+
     def get_local_transport(self, serial: str | None = None) -> Any | None:
         """Get the Modbus or Dongle transport for local register operations.
 
@@ -1869,14 +2072,23 @@ class LocalTransportMixin(_MixinBase):
         # Check for transport attached to Station device (HYBRID with local_transports)
         if serial and self.station:
             inverter = self.get_inverter_object(serial)
-            if inverter and hasattr(inverter, "_transport") and inverter._transport:
-                return inverter._transport
+            transport = getattr(inverter, "_transport", None) if inverter else None
+            if transport:
+                return transport
 
         # Check LOCAL mode inverter cache
         if serial and self.connection_type == CONNECTION_TYPE_LOCAL:
             inverter = self._inverter_cache.get(serial)
-            if inverter and hasattr(inverter, "_transport"):
-                return inverter._transport
+            transport = getattr(inverter, "_transport", None) if inverter else None
+            if transport:
+                return transport
+
+        # Check MID device cache (GridBOSS devices in LOCAL/HYBRID mode)
+        if serial:
+            mid_device = self._mid_device_cache.get(serial)
+            transport = getattr(mid_device, "_transport", None) if mid_device else None
+            if transport:
+                return transport
 
         # Deprecated single-device modes (MODBUS, DONGLE, old HYBRID format)
         if self._modbus_transport:

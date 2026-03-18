@@ -519,7 +519,6 @@
       "grid_voltage": {
         "name": "Grid Voltage"
       },
-
       "grid_frequency": {
         "name": "Grid Frequency"
       },
@@ -535,7 +534,6 @@
       "eps_voltage": {
         "name": "EPS Voltage"
       },
-
       "eps_frequency": {
         "name": "EPS Frequency"
       },
@@ -547,6 +545,54 @@
       },
       "eps_power_l2": {
         "name": "EPS Power L2"
+      },
+      "eps_apparent_power_l1": {
+        "name": "EPS Apparent Power L1"
+      },
+      "eps_apparent_power_l2": {
+        "name": "EPS Apparent Power L2"
+      },
+      "eps_energy_today_l1": {
+        "name": "EPS Energy Today L1"
+      },
+      "eps_energy_today_l2": {
+        "name": "EPS Energy Today L2"
+      },
+      "eps_energy_total_l1": {
+        "name": "EPS Energy Total L1"
+      },
+      "eps_energy_total_l2": {
+        "name": "EPS Energy Total L2"
+      },
+      "inverter_power_l1": {
+        "name": "Inverter Power L1"
+      },
+      "inverter_power_l2": {
+        "name": "Inverter Power L2"
+      },
+      "rectifier_power_l1": {
+        "name": "Rectifier Power L1"
+      },
+      "rectifier_power_l2": {
+        "name": "Rectifier Power L2"
+      },
+      "grid_export_power_l1": {
+        "name": "Grid Export Power L1"
+      },
+      "grid_export_power_l2": {
+        "name": "Grid Export Power L2"
+      },
+      "grid_import_power_l1": {
+        "name": "Grid Import Power L1"
+      },
+      "grid_import_power_l2": {
+        "name": "Grid Import Power L2"
+      },
+      "generator_voltage_l1": {
+        "name": "Generator Voltage L1"
+      },
+      "generator_voltage_l2": {
+        "name": "Generator Voltage L2"
       },
       "power_output": {
         "name": "Power Output"
@@ -571,9 +617,6 @@
       },
       "bus2_voltage": {
         "name": "Bus 2 Voltage"
-      },
-      "total_load_power": {
-        "name": "Total Load Power"
       },
       "smart_port1_status": {
         "name": "Smart Port 1 Status",
@@ -638,6 +681,9 @@
       "pv_charge_power": {
         "name": "PV Charge Power"
       },
+      "pv_start_voltage": {
+        "name": "PV Start Voltage"
+      },
       "ac_charge_soc_limit": {
         "name": "AC Charge SOC Limit"
       },
@@ -668,6 +714,19 @@
         "state": {
           "normal": "Normal",
           "standby": "Standby"
+        }
+      },
+      "pv_input_mode": {
+        "name": "PV Input Mode",
+        "state": {
+          "no_pv": "NO PV",
+          "pv1": "PV1",
+          "pv2": "PV2",
+          "pv3": "PV3",
+          "pv1_pv2": "PV1 & PV2",
+          "pv1_pv3": "PV1 & PV3",
+          "pv2_pv3": "PV2 & PV3",
+          "pv1_pv2_pv3": "PV1 & PV2 & PV3"
         }
       }
     }

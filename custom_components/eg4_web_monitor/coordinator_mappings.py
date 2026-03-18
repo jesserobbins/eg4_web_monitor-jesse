@@ -183,6 +183,22 @@ INVERTER_RUNTIME_KEYS: frozenset[str] = frozenset(
         "ac_couple_power_s",
         "ac_couple_power_t",
         "ac_input_type",
+        # EPS per-leg (split-phase, regs 129-132)
+        "eps_power_l1",
+        "eps_power_l2",
+        "eps_apparent_power_l1",
+        "eps_apparent_power_l2",
+        # US split-phase per-leg power (regs 195-204)
+        "inverter_power_l1",
+        "inverter_power_l2",
+        "rectifier_power_l1",
+        "rectifier_power_l2",
+        "grid_export_power_l1",
+        "grid_export_power_l2",
+        "grid_import_power_l1",
+        "grid_import_power_l2",
+        "generator_voltage_l1",
+        "generator_voltage_l2",
     }
 )
 
@@ -200,10 +216,15 @@ INVERTER_ENERGY_KEYS: frozenset[str] = frozenset(
         "grid_import_lifetime",
         "grid_export_lifetime",
         "consumption_lifetime",
+        # EPS per-leg energy (split-phase, regs 133-138)
+        "eps_energy_today_l1",
+        "eps_energy_today_l2",
+        "eps_energy_total_l1",
+        "eps_energy_total_l2",
     }
 )
 
-BATTERY_BANK_KEYS: frozenset[str] = frozenset(
+BATTERY_BANK_CORE_KEYS: frozenset[str] = frozenset(
     {
         "battery_bank_soc",
         "battery_bank_voltage",
@@ -218,27 +239,47 @@ BATTERY_BANK_KEYS: frozenset[str] = frozenset(
         "battery_bank_status",
         "battery_status",
         "battery_bank_last_polled",
-        "battery_bank_min_soh",
-        "battery_bank_max_cell_temp",
-        "battery_bank_temp_delta",
-        "battery_bank_cell_voltage_delta_max",
+        # Bank-level BMS register data (always available, no CAN bus needed):
+        "battery_bank_min_soh",  # reg 5 SOH (fallback when no individual batteries)
+        "battery_bank_cycle_count",  # reg 106
+        "battery_bank_max_cell_temp",  # reg 103
+        "battery_bank_min_cell_temp",  # reg 104
+        "battery_bank_temp_delta",  # reg 103-104
+        "battery_bank_cell_voltage_delta_max",  # reg 101-102
+        "battery_bank_min_cell_voltage",  # reg 102
+        "battery_bank_bms_charge_current_limit",  # reg 81
+        "battery_bank_bms_discharge_current_limit",  # reg 82
+        "battery_bank_bms_charge_voltage_ref",  # reg 83
+        "battery_bank_bms_discharge_cutoff",  # reg 84
+        "battery_bank_bms_battery_type",  # reg 80
+        "battery_bank_voltage_inv_sample",  # reg 107
+        "battery_bank_charge_rate",
+    }
+)
+
+BATTERY_BANK_CAN_DIAGNOSTIC_KEYS: frozenset[str] = frozenset(
+    {
+        # Cross-battery diagnostics that require individual battery data from
+        # CAN bus registers (5002+).  These are only added dynamically when
+        # BatteryBankData.batteries contains real data — never pre-created
+        # statically, so entities won't exist when CAN data is unavailable.
         "battery_bank_soc_delta",
         "battery_bank_soh_delta",
         "battery_bank_voltage_delta",
         "battery_bank_cycle_count_delta",
-        "battery_bank_charge_rate",
     }
+)
+
+BATTERY_BANK_KEYS: frozenset[str] = (
+    BATTERY_BANK_CORE_KEYS | BATTERY_BANK_CAN_DIAGNOSTIC_KEYS
 )
 
 INVERTER_COMPUTED_KEYS: frozenset[str] = frozenset(
     {
         "consumption_power",
-        "total_load_power",
         "battery_power",
         "rectifier_power",
         "grid_import_power",
-        "eps_power_l1",
-        "eps_power_l2",
         "grid_voltage",
         "eps_voltage",
     }
@@ -256,7 +297,7 @@ INVERTER_METADATA_KEYS: frozenset[str] = frozenset(
 ALL_INVERTER_SENSOR_KEYS: frozenset[str] = (
     INVERTER_RUNTIME_KEYS
     | INVERTER_ENERGY_KEYS
-    | BATTERY_BANK_KEYS
+    | BATTERY_BANK_CORE_KEYS
     | INVERTER_COMPUTED_KEYS
     | INVERTER_METADATA_KEYS
 )
@@ -293,13 +334,11 @@ GRIDBOSS_SENSOR_KEYS: frozenset[str] = frozenset(
         "generator_power_l2",
         "generator_current_l1",
         "generator_current_l2",
+        "generator_voltage_l1",
+        "generator_voltage_l2",
         "hybrid_power",
         "phase_lock_frequency",
         "off_grid",
-        "smart_port1_status",
-        "smart_port2_status",
-        "smart_port3_status",
-        "smart_port4_status",
         "smart_load1_power_l1",
         "smart_load1_power_l2",
         "smart_load2_power_l1",
@@ -324,6 +363,22 @@ GRIDBOSS_SENSOR_KEYS: frozenset[str] = frozenset(
         "grid_import_total",
         "load_today",
         "load_total",
+        "ac_couple1_today",
+        "ac_couple1_total",
+        "ac_couple2_today",
+        "ac_couple2_total",
+        "ac_couple3_today",
+        "ac_couple3_total",
+        "ac_couple4_today",
+        "ac_couple4_total",
+        "smart_load1_today",
+        "smart_load1_total",
+        "smart_load2_today",
+        "smart_load2_total",
+        "smart_load3_today",
+        "smart_load3_total",
+        "smart_load4_today",
+        "smart_load4_total",
         "firmware_version",
         "connection_transport",
         "transport_host",
@@ -331,24 +386,45 @@ GRIDBOSS_SENSOR_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Smart port power keys that should NOT be included in static entity creation.
+# Keys that live in the coordinator sensors dict but must NOT become HA sensor
+# entities.  They are read by select entities and internal coordinator logic,
+# but are excluded from both the static entity-creation path and the
+# late-registration listener in sensor.py.
+GRIDBOSS_COORDINATOR_INTERNAL_KEYS: frozenset[str] = frozenset(
+    f"smart_port{port}_status" for port in range(1, 5)
+)
+
+# Smart port keys that should NOT be included in static entity creation.
 # These are dynamically added by _filter_unused_smart_port_sensors() based on
 # actual port status, so only active ports get entities.
-# Includes per-port L1/L2 keys AND per-port aggregate keys (computed by
-# _calculate_gridboss_aggregates from L1+L2), plus total aggregates.
-GRIDBOSS_SMART_PORT_POWER_KEYS: frozenset[str] = frozenset(
+# Includes per-port L1/L2 power keys, per-port aggregate power keys (computed by
+# _calculate_gridboss_aggregates from L1+L2), total aggregates, and per-port
+# energy keys (today/total).
+GRIDBOSS_SMART_PORT_DYNAMIC_KEYS: frozenset[str] = frozenset(
     [
-        f"{prefix}{port}_power_l{phase}"
+        f"{prefix}{port}_{suffix}"
         for prefix in ("smart_load", "ac_couple")
         for port in range(1, 5)
-        for phase in (1, 2)
-    ]
-    + [
-        f"{prefix}{port}_power"
-        for prefix in ("smart_load", "ac_couple")
-        for port in range(1, 5)
+        for suffix in (
+            "power_l1",
+            "power_l2",
+            "power",
+            "current_l1",
+            "current_l2",
+            "today",
+            "total",
+        )
     ]
     + ["smart_load_power", "ac_couple_power"]
+)
+
+# Keys used for static GridBOSS entity creation: everything in GRIDBOSS_SENSOR_KEYS
+# except keys that are added dynamically after the first real poll (smart port power /
+# energy) and keys that are coordinator-internal (smart_port*_status).
+GRIDBOSS_STATIC_ENTITY_KEYS: frozenset[str] = (
+    GRIDBOSS_SENSOR_KEYS
+    - GRIDBOSS_SMART_PORT_DYNAMIC_KEYS
+    - GRIDBOSS_COORDINATOR_INTERNAL_KEYS
 )
 
 PARALLEL_GROUP_SENSOR_KEYS: frozenset[str] = frozenset(
@@ -457,6 +533,11 @@ def _build_runtime_sensor_mapping(runtime_data: Any) -> dict[str, Any]:
         "eps_voltage_l2": runtime_data.eps_l2_voltage,
         "eps_frequency": runtime_data.eps_frequency,
         "eps_power": runtime_data.eps_power,
+        # EPS per-leg power (split-phase, regs 129-132)
+        "eps_power_l1": runtime_data.eps_l1_power,
+        "eps_power_l2": runtime_data.eps_l2_power,
+        "eps_apparent_power_l1": runtime_data.eps_l1_apparent_power,
+        "eps_apparent_power_l2": runtime_data.eps_l2_apparent_power,
         # Note: consumption_power is NOT set here - it's computed by the coordinator
         # using inverter.consumption_power (energy balance calculation from pylxpweb)
         # Output power (split-phase total)
@@ -465,6 +546,17 @@ def _build_runtime_sensor_mapping(runtime_data: Any) -> dict[str, Any]:
         "generator_voltage": runtime_data.generator_voltage,
         "generator_frequency": runtime_data.generator_frequency,
         "generator_power": runtime_data.generator_power,
+        # US split-phase per-leg power (regs 195-204)
+        "generator_voltage_l1": runtime_data.generator_l1_voltage,
+        "generator_voltage_l2": runtime_data.generator_l2_voltage,
+        "inverter_power_l1": runtime_data.inverter_power_l1,
+        "inverter_power_l2": runtime_data.inverter_power_l2,
+        "rectifier_power_l1": runtime_data.rectifier_power_l1,
+        "rectifier_power_l2": runtime_data.rectifier_power_l2,
+        "grid_export_power_l1": runtime_data.grid_export_power_l1,
+        "grid_export_power_l2": runtime_data.grid_export_power_l2,
+        "grid_import_power_l1": runtime_data.grid_import_power_l1,
+        "grid_import_power_l2": runtime_data.grid_import_power_l2,
         # Bus voltages
         "bus1_voltage": runtime_data.bus_voltage_1,
         "bus2_voltage": runtime_data.bus_voltage_2,
@@ -577,6 +669,11 @@ def _build_energy_sensor_mapping(energy_data: Any) -> dict[str, Any]:
             energy_data.charge_energy_total,
             energy_data.grid_export_total,
         ),
+        # EPS per-leg energy (split-phase, regs 133-138)
+        "eps_energy_today_l1": energy_data.eps_l1_energy_today,
+        "eps_energy_today_l2": energy_data.eps_l2_energy_today,
+        "eps_energy_total_l1": energy_data.eps_l1_energy_total,
+        "eps_energy_total_l2": energy_data.eps_l2_energy_total,
     }
 
 
@@ -640,33 +737,45 @@ def _build_battery_bank_sensor_mapping(battery_data: Any) -> dict[str, Any]:
         "battery_status": battery_data.status,
         # Last polled timestamp for battery bank device
         "battery_bank_last_polled": dt_util.utcnow(),
-    }
-
-    # Cross-battery diagnostics — computed by BatteryBankData properties.
-    # Properties return None when insufficient data, so only add non-None values.
-    diagnostic_sensors = {
+        # Bank-level BMS register data (always available, no CAN bus needed)
+        "battery_bank_cycle_count": battery_data.cycle_count,
         "battery_bank_min_soh": battery_data.min_soh,
         "battery_bank_max_cell_temp": battery_data.max_cell_temp,
+        "battery_bank_min_cell_temp": battery_data.min_cell_temperature,
         "battery_bank_temp_delta": battery_data.temp_delta,
         "battery_bank_cell_voltage_delta_max": battery_data.cell_voltage_delta_max,
+        "battery_bank_min_cell_voltage": battery_data.min_cell_voltage,
+        "battery_bank_bms_charge_current_limit": battery_data.bms_charge_current_limit,
+        "battery_bank_bms_discharge_current_limit": battery_data.bms_discharge_current_limit,
+        "battery_bank_bms_charge_voltage_ref": battery_data.bms_charge_voltage_ref,
+        "battery_bank_bms_discharge_cutoff": battery_data.bms_discharge_cutoff,
+        "battery_bank_bms_battery_type": battery_data.bms_battery_type,
+        "battery_bank_voltage_inv_sample": battery_data.battery_voltage_inv_sample,
+    }
+
+    # CAN-dependent cross-battery diagnostics — require individual battery data
+    # from registers 5002+. Properties return None when no CAN data available,
+    # so only add non-None values (these keys are NOT in ALL_INVERTER_SENSOR_KEYS).
+    can_diagnostic_sensors = {
         "battery_bank_soc_delta": battery_data.soc_delta,
         "battery_bank_soh_delta": battery_data.soh_delta,
         "battery_bank_voltage_delta": battery_data.voltage_delta,
         "battery_bank_cycle_count_delta": battery_data.cycle_count_delta,
     }
-    sensors.update({k: v for k, v in diagnostic_sensors.items() if v is not None})
+    sensors.update({k: v for k, v in can_diagnostic_sensors.items() if v is not None})
 
     return sensors
 
 
 def _build_individual_battery_mapping(battery: Any) -> dict[str, Any]:
-    """Build sensor mapping from individual BatteryData object (LOCAL mode).
+    """Build sensor mapping from a BatteryData or Battery object.
 
-    Maps pylxpweb transport's BatteryData fields to sensor keys that match
-    the expected format used by HTTP mode (from Battery objects).
+    Works with both pylxpweb transport BatteryData (LOCAL/HYBRID overlay)
+    and Battery device objects (HYBRID cloud baseline) via shared attribute
+    names defined on both classes.
 
     Args:
-        battery: BatteryData object from pylxpweb transport.
+        battery: BatteryData (transport) or Battery (device) object.
 
     Returns:
         Dictionary mapping sensor keys to values.
@@ -710,6 +819,13 @@ def _build_individual_battery_mapping(battery: Any) -> dict[str, Any]:
         "battery_index": battery.battery_index,
         # Last polled timestamp for individual battery device
         "battery_last_polled": dt_util.utcnow(),
+        # Last seen: when this battery's register data was actually read from
+        # the inverter (round-robin may serve stale cached data for >4 systems)
+        "battery_last_seen": (
+            dt_util.as_utc(last_seen)
+            if (last_seen := getattr(battery, "last_seen", None))
+            else dt_util.utcnow()
+        ),
     }
 
     # Signed C-rate as percentage of capacity per hour
@@ -781,6 +897,8 @@ def _build_gridboss_sensor_mapping(mid_device: Any) -> dict[str, Any]:
         "generator_power_l2": mid_device.generator_l2_power,
         "generator_current_l1": mid_device.generator_l1_current,
         "generator_current_l2": mid_device.generator_l2_current,
+        "generator_voltage_l1": mid_device.generator_l1_voltage,
+        "generator_voltage_l2": mid_device.generator_l2_voltage,
         # Other sensors
         "hybrid_power": mid_device.hybrid_power,
         "phase_lock_frequency": mid_device.phase_lock_frequency,
@@ -799,6 +917,17 @@ def _build_gridboss_sensor_mapping(mid_device: Any) -> dict[str, Any]:
         "smart_load3_power_l2": mid_device.smart_load3_l2_power,
         "smart_load4_power_l1": mid_device.smart_load4_l1_power,
         "smart_load4_power_l2": mid_device.smart_load4_l2_power,
+        # Smart port current (L1/L2) — Modbus only, regs 18-25
+        # Mapped as smart_load by default; _filter_unused_smart_port_sensors()
+        # will remap to ac_couple keys for ports in AC Couple mode.
+        "smart_load1_current_l1": mid_device.smart_port1_l1_current,
+        "smart_load1_current_l2": mid_device.smart_port1_l2_current,
+        "smart_load2_current_l1": mid_device.smart_port2_l1_current,
+        "smart_load2_current_l2": mid_device.smart_port2_l2_current,
+        "smart_load3_current_l1": mid_device.smart_port3_l1_current,
+        "smart_load3_current_l2": mid_device.smart_port3_l2_current,
+        "smart_load4_current_l1": mid_device.smart_port4_l1_current,
+        "smart_load4_current_l2": mid_device.smart_port4_l2_current,
         # AC couple power (L1/L2)
         "ac_couple1_power_l1": mid_device.ac_couple1_l1_power,
         "ac_couple1_power_l2": mid_device.ac_couple1_l2_power,
@@ -817,6 +946,24 @@ def _build_gridboss_sensor_mapping(mid_device: Any) -> dict[str, Any]:
         "grid_import_total": mid_device.e_to_user_total,
         "load_today": mid_device.e_load_today,
         "load_total": mid_device.e_load_total,
+        # AC Couple energy (all 4 ports)
+        "ac_couple1_today": mid_device.e_ac_couple1_today,
+        "ac_couple1_total": mid_device.e_ac_couple1_total,
+        "ac_couple2_today": mid_device.e_ac_couple2_today,
+        "ac_couple2_total": mid_device.e_ac_couple2_total,
+        "ac_couple3_today": mid_device.e_ac_couple3_today,
+        "ac_couple3_total": mid_device.e_ac_couple3_total,
+        "ac_couple4_today": mid_device.e_ac_couple4_today,
+        "ac_couple4_total": mid_device.e_ac_couple4_total,
+        # Smart Load energy (all 4 ports)
+        "smart_load1_today": mid_device.e_smart_load1_today,
+        "smart_load1_total": mid_device.e_smart_load1_total,
+        "smart_load2_today": mid_device.e_smart_load2_today,
+        "smart_load2_total": mid_device.e_smart_load2_total,
+        "smart_load3_today": mid_device.e_smart_load3_today,
+        "smart_load3_total": mid_device.e_smart_load3_total,
+        "smart_load4_today": mid_device.e_smart_load4_today,
+        "smart_load4_total": mid_device.e_smart_load4_total,
         # Last polled timestamp for midbox/GridBOSS device
         "midbox_last_polled": dt_util.utcnow(),
     }

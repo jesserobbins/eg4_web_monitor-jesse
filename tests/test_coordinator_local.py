@@ -134,7 +134,7 @@ class TestReadModbusParameters:
 
         result = await coordinator._read_modbus_parameters(mock_transport)
 
-        # 11 register ranges: 21, 64-79, 101-102, 105-106, 110, 125, 179, 220-223, 227, 231-232, 233
+        # 11 register ranges: 20-22, 64-79, 101-102, 105-106, 110, 125, 179, 220-223, 227, 231-232, 233
         assert mock_transport.read_named_parameters.call_count == 11
         assert "PARAM_A" in result
 
@@ -148,8 +148,8 @@ class TestReadModbusParameters:
         async def mock_read(start: int, count: int) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
-            if start == 21:
-                raise RuntimeError("range 21 failed")
+            if start == 20:
+                raise RuntimeError("range 20 failed")
             return {f"param_{start}": start}
 
         mock_transport = MagicMock()
@@ -208,7 +208,6 @@ class TestBuildLocalDeviceData:
         mock_inverter._transport.host = "192.168.1.100"
         mock_inverter._transport._read_input_registers = AsyncMock(return_value=[0, 0])
         mock_inverter.consumption_power = None
-        mock_inverter.total_load_power = None
         mock_inverter.battery_power = None
         mock_inverter.rectifier_power = None
         mock_inverter.power_to_user = None
@@ -247,7 +246,6 @@ class TestBuildLocalDeviceData:
         mock_inverter._transport_battery = None
         mock_inverter._transport = None
         mock_inverter.consumption_power = None
-        mock_inverter.total_load_power = None
         mock_inverter.battery_power = None
         mock_inverter.rectifier_power = None
         mock_inverter.power_to_user = None
@@ -283,7 +281,6 @@ class TestBuildLocalDeviceData:
         mock_inverter._transport_battery = None
         mock_inverter._transport = None
         mock_inverter.consumption_power = 3000
-        mock_inverter.total_load_power = 4000
         mock_inverter.battery_power = 1500
         mock_inverter.rectifier_power = 200
         mock_inverter.power_to_user = 500
@@ -301,7 +298,6 @@ class TestBuildLocalDeviceData:
             )
 
         assert result["sensors"]["consumption_power"] == 3000
-        assert result["sensors"]["total_load_power"] == 4000
         assert result["sensors"]["battery_power"] == 1500
         assert result["sensors"]["rectifier_power"] == 200
         assert result["sensors"]["grid_import_power"] == 500
@@ -635,6 +631,43 @@ class TestTransportAccessors:
         # No deprecated transports set
         assert coordinator.has_local_transport() is False
 
+    def test_get_local_transport_from_mid_device_cache(self, hass, local_config_entry):
+        """LOCAL mode: get_local_transport returns transport from MID device cache."""
+        local_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, local_config_entry)
+
+        mock_transport = MagicMock()
+        mock_mid = MagicMock()
+        mock_mid._transport = mock_transport
+        coordinator._mid_device_cache["GRIDBOSS001"] = mock_mid
+
+        result = coordinator.get_local_transport("GRIDBOSS001")
+        assert result is mock_transport
+
+    def test_has_local_transport_true_for_mid_device(self, hass, local_config_entry):
+        """has_local_transport returns True for GridBOSS serial in MID cache."""
+        local_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, local_config_entry)
+
+        mock_mid = MagicMock()
+        mock_mid._transport = MagicMock()
+        coordinator._mid_device_cache["GRIDBOSS001"] = mock_mid
+
+        assert coordinator.has_local_transport("GRIDBOSS001") is True
+
+    def test_get_local_transport_mid_device_no_transport(
+        self, hass, local_config_entry
+    ):
+        """MID device without _transport attribute returns None."""
+        local_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, local_config_entry)
+
+        mock_mid = MagicMock(spec=[])  # No attributes
+        coordinator._mid_device_cache["GRIDBOSS001"] = mock_mid
+
+        result = coordinator.get_local_transport("GRIDBOSS001")
+        assert result is None
+
     def test_is_local_only_local_mode(self, hass, local_config_entry):
         """LOCAL mode → is_local_only returns True."""
         local_config_entry.add_to_hass(hass)
@@ -755,14 +788,23 @@ class TestAttachLocalTransports:
 
 
 class TestAttachForcedTransportRead:
-    """Test forced transport read after HYBRID attachment."""
+    """Test transport attachment does NOT issue a forced read.
+
+    asyncio.wait_for() with Python 3.11 does not interrupt in-flight pymodbus
+    reads — it waits for the inner task to finish before raising TimeoutError.
+    On HA restart the Waveshare gateway has stale RS485 responses buffered,
+    causing reads to fail for 3–5 minutes. A forced refresh here would block
+    async_config_entry_first_refresh() for the entire duration, causing HA's
+    setup timeout to fire and cancel entity setup (setup_error). Data is
+    populated by the first regular poll instead.
+    """
 
     @patch("custom_components.eg4_web_monitor.coordinator.LuxpowerClient")
     @patch("custom_components.eg4_web_monitor.coordinator.aiohttp_client")
-    async def test_attach_forces_transport_read(
+    async def test_attach_does_not_force_transport_read(
         self, mock_aiohttp, mock_client_cls, hass, hybrid_config_entry
     ):
-        """refresh(force=True) called for attached inverters after attachment."""
+        """No refresh() call is issued after transport attachment."""
         hybrid_config_entry.add_to_hass(hass)
         coordinator = EG4DataUpdateCoordinator(hass, hybrid_config_entry)
 
@@ -791,14 +833,15 @@ class TestAttachForcedTransportRead:
             await coordinator._attach_local_transports_to_station()
 
         assert coordinator._local_transports_attached is True
-        mock_inverter.refresh.assert_called_once_with(force=True)
+        # No forced read — data will be populated on the first regular poll
+        mock_inverter.refresh.assert_not_called()
 
     @patch("custom_components.eg4_web_monitor.coordinator.LuxpowerClient")
     @patch("custom_components.eg4_web_monitor.coordinator.aiohttp_client")
-    async def test_attach_force_refresh_failure_nonfatal(
+    async def test_attach_completes_when_inverter_has_no_transport(
         self, mock_aiohttp, mock_client_cls, hass, hybrid_config_entry
     ):
-        """Exception in forced refresh logged but attachment still succeeds."""
+        """Attachment loop handles inverters without a transport gracefully."""
         hybrid_config_entry.add_to_hass(hass)
         coordinator = EG4DataUpdateCoordinator(hass, hybrid_config_entry)
 
@@ -809,10 +852,11 @@ class TestAttachForcedTransportRead:
         mock_result.unmatched_serials = []
         mock_result.failed_serials = []
 
+        # Inverter with no transport attached (e.g. unmatched serial)
         mock_inverter = MagicMock()
-        mock_inverter._transport = MagicMock()
+        mock_inverter._transport = None
         mock_inverter.serial_number = "1234567890"
-        mock_inverter.refresh = AsyncMock(side_effect=ConnectionError("timeout"))
+        mock_inverter.refresh = AsyncMock()
 
         mock_station = MagicMock()
         mock_station.attach_local_transports = AsyncMock(return_value=mock_result)
@@ -826,8 +870,9 @@ class TestAttachForcedTransportRead:
         ):
             await coordinator._attach_local_transports_to_station()
 
-        # Attachment still succeeds despite force-refresh failure
+        # Attachment still marks as attached; no refresh for transportless inverter
         assert coordinator._local_transports_attached is True
+        mock_inverter.refresh.assert_not_called()
 
 
 # ── _log_transport_error ─────────────────────────────────────────────
@@ -1020,7 +1065,9 @@ class TestGridBOSSFirmwareCache:
 
         mock_transport = MagicMock()
         mock_transport.is_connected = True
-        mock_transport.read_firmware_version = AsyncMock(return_value="SHOULD-NOT-BE-CALLED")
+        mock_transport.read_firmware_version = AsyncMock(
+            return_value="SHOULD-NOT-BE-CALLED"
+        )
 
         mock_mid = MagicMock()
         mock_mid._transport = mock_transport
@@ -1053,3 +1100,741 @@ class TestGridBOSSFirmwareCache:
         # Should use cached value, NOT call transport again
         mock_transport.read_firmware_version.assert_not_called()
         assert processed["devices"]["GB002"]["firmware_version"] == "IAAB-1600"
+
+
+class TestSharedBatterySecondary:
+    """Shared battery suppression for parallel secondary inverters (#169).
+
+    In a parallel system with "Share Battery" enabled, the CAN bus connects
+    only to the primary inverter.  The secondary (role >= 2) reports
+    battery_count=0 at Modbus register 96.  Battery bank device/entities
+    should be suppressed on the secondary — per-inverter runtime sensors
+    (battery_voltage, battery_current, state_of_charge) remain accurate.
+    """
+
+    @pytest.fixture
+    def parallel_config_entry(self, hass):
+        """Config entry with primary + secondary inverter in parallel."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            title="EG4 - Parallel",
+            data={
+                CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+                CONF_DST_SYNC: False,
+                CONF_LIBRARY_DEBUG: False,
+                CONF_LOCAL_TRANSPORTS: [
+                    {
+                        "serial": "PRIMARY001",
+                        "host": "192.168.1.100",
+                        "port": 502,
+                        "transport_type": "modbus_tcp",
+                        "inverter_family": "EG4_HYBRID",
+                        "model": "FlexBOSS18",
+                        "parallel_number": 2,
+                        "parallel_master_slave": 1,
+                    },
+                    {
+                        "serial": "SECONDARY01",
+                        "host": "192.168.1.101",
+                        "port": 502,
+                        "transport_type": "modbus_tcp",
+                        "inverter_family": "EG4_HYBRID",
+                        "model": "FlexBOSS21",
+                        "parallel_number": 2,
+                        "parallel_master_slave": 2,
+                    },
+                ],
+            },
+            options={},
+            entry_id="parallel_test",
+        )
+        entry.add_to_hass(hass)
+        return entry
+
+    async def test_static_phase_includes_battery_bank_keys_for_all_inverters(
+        self, hass, parallel_config_entry
+    ):
+        """Static phase includes core battery_bank keys for all inverters.
+
+        We cannot know at static-phase time whether a secondary truly
+        lacks batteries (shared CAN bus) or has its own bank.  Suppression
+        happens at runtime when we have actual battery_count data.
+        """
+        from custom_components.eg4_web_monitor.coordinator_mappings import (
+            BATTERY_BANK_CORE_KEYS,
+        )
+
+        coordinator = EG4DataUpdateCoordinator(hass, parallel_config_entry)
+        result = coordinator._build_static_local_data()
+
+        primary_sensors = result["devices"]["PRIMARY001"]["sensors"]
+        secondary_sensors = result["devices"]["SECONDARY01"]["sensors"]
+
+        # Both primary and secondary should have core battery bank keys
+        assert any(k in primary_sensors for k in BATTERY_BANK_CORE_KEYS), (
+            "Primary should have battery bank keys in static phase"
+        )
+
+        assert any(k in secondary_sensors for k in BATTERY_BANK_CORE_KEYS), (
+            "Secondary should have battery bank keys in static phase"
+        )
+
+    async def test_static_phase_excludes_can_diagnostic_keys(
+        self, hass, parallel_config_entry
+    ):
+        """Static phase must NOT include CAN-dependent diagnostic keys.
+
+        CAN bus diagnostic sensors (soc_delta, soh_delta, etc.) require
+        individual battery data from registers 5002+.  Pre-creating them
+        statically would produce permanently Unavailable entities when
+        CAN data is not available.
+        """
+        from custom_components.eg4_web_monitor.coordinator_mappings import (
+            BATTERY_BANK_CAN_DIAGNOSTIC_KEYS,
+        )
+
+        coordinator = EG4DataUpdateCoordinator(hass, parallel_config_entry)
+        result = coordinator._build_static_local_data()
+
+        for serial in result["devices"]:
+            sensors = result["devices"][serial]["sensors"]
+            for key in BATTERY_BANK_CAN_DIAGNOSTIC_KEYS:
+                assert key not in sensors, (
+                    f"{key} should not be in static sensors for {serial}"
+                )
+
+    async def test_secondary_skips_battery_bank_when_count_zero(
+        self, hass, parallel_config_entry
+    ):
+        """Secondary (battery_count=0) should not get battery bank sensors."""
+        coordinator = EG4DataUpdateCoordinator(hass, parallel_config_entry)
+        coordinator._local_static_phase_done = True
+
+        # Mock secondary inverter: role=2, battery_count=0 (shared battery)
+        mock_runtime = MagicMock()
+        mock_runtime.parallel_number = 2
+        mock_runtime.parallel_master_slave = 2
+        mock_runtime.parallel_phase = 0
+        mock_runtime.pv_total_power = 5000
+        mock_runtime.battery_soc = 93
+        mock_runtime.grid_power = 0
+        mock_runtime.battery_current = 15.0
+        mock_runtime.battery_voltage = 53.7
+
+        mock_battery_data = MagicMock()
+        mock_battery_data.battery_count = None  # CAN bus not connected
+        mock_battery_data.batteries = []
+
+        mock_inverter = MagicMock()
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter._transport_runtime = mock_runtime
+        mock_inverter._transport_energy = None
+        mock_inverter._transport_battery = mock_battery_data
+        mock_inverter._transport = MagicMock()
+        mock_inverter._transport.is_connected = True
+        mock_inverter._transport.host = "192.168.1.101"
+        mock_inverter._transport.disconnect = AsyncMock()
+        mock_inverter.consumption_power = None
+        mock_inverter.battery_power = None
+        mock_inverter.rectifier_power = None
+        mock_inverter.power_to_user = None
+        mock_inverter.eps_power_l1 = None
+        mock_inverter.eps_power_l2 = None
+
+        # Pre-populate caches
+        coordinator._inverter_cache["SECONDARY01"] = mock_inverter
+        coordinator._firmware_cache["SECONDARY01"] = "fAAB-2525"
+
+        with patch(
+            "custom_components.eg4_web_monitor.coordinator_local._build_runtime_sensor_mapping",
+            return_value={
+                "battery_voltage": 53.7,
+                "battery_current": 15.0,
+                "state_of_charge": 93,
+            },
+        ):
+            processed: dict[str, Any] = {
+                "devices": {},
+                "parallel_groups": {},
+                "parameters": {},
+            }
+            device_availability: dict[str, bool] = {}
+            await coordinator._process_single_local_device(
+                config=parallel_config_entry.data[CONF_LOCAL_TRANSPORTS][1],
+                processed=processed,
+                device_availability=device_availability,
+            )
+
+        device = processed["devices"]["SECONDARY01"]
+
+        # Runtime sensors (from input registers) should be present
+        assert device["sensors"]["battery_voltage"] == 53.7
+        assert device["sensors"]["battery_current"] == 15.0
+        assert device["sensors"]["state_of_charge"] == 93
+
+        # No battery_bank_* sensors should exist
+        bank_keys = [k for k in device["sensors"] if k.startswith("battery_bank_")]
+        assert bank_keys == [], f"Unexpected battery bank sensors: {bank_keys}"
+
+        # No individual batteries
+        assert device["batteries"] == {}
+
+    async def test_primary_retains_battery_bank(self, hass, parallel_config_entry):
+        """Primary inverter (role=1) should still get battery bank sensors."""
+        coordinator = EG4DataUpdateCoordinator(hass, parallel_config_entry)
+        coordinator._local_static_phase_done = True
+
+        mock_runtime = MagicMock()
+        mock_runtime.parallel_number = 2
+        mock_runtime.parallel_master_slave = 1
+        mock_runtime.parallel_phase = 0
+        mock_runtime.pv_total_power = 8000
+        mock_runtime.battery_soc = 93
+        mock_runtime.grid_power = 0
+
+        mock_battery_data = MagicMock()
+        mock_battery_data.battery_count = 4  # CAN bus connected
+        mock_battery_data.voltage = 53.7
+        mock_battery_data.current = 30.0
+        mock_battery_data.soc = 93
+        mock_battery_data.charge_power = 825.0
+        mock_battery_data.discharge_power = 0
+        mock_battery_data.battery_power = 1611.0
+        mock_battery_data.max_capacity = 280.0
+        mock_battery_data.current_capacity = 260.0
+        mock_battery_data.remain_capacity = 260.0
+        mock_battery_data.full_capacity = 280.0
+        mock_battery_data.capacity_percent = 92.9
+        mock_battery_data.status = "Charging"
+        mock_battery_data.min_soh = None
+        mock_battery_data.max_cell_temp = None
+        mock_battery_data.temp_delta = None
+        mock_battery_data.cell_voltage_delta_max = None
+        mock_battery_data.soc_delta = None
+        mock_battery_data.soh_delta = None
+        mock_battery_data.voltage_delta = None
+        mock_battery_data.cycle_count_delta = None
+        mock_battery_data.batteries = [MagicMock(), MagicMock()]
+
+        mock_inverter = MagicMock()
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter._transport_runtime = mock_runtime
+        mock_inverter._transport_energy = None
+        mock_inverter._transport_battery = mock_battery_data
+        mock_inverter._transport = MagicMock()
+        mock_inverter._transport.is_connected = True
+        mock_inverter._transport.host = "192.168.1.100"
+        mock_inverter._transport.disconnect = AsyncMock()
+        mock_inverter.consumption_power = None
+        mock_inverter.battery_power = None
+        mock_inverter.rectifier_power = None
+        mock_inverter.power_to_user = None
+        mock_inverter.eps_power_l1 = None
+        mock_inverter.eps_power_l2 = None
+
+        coordinator._inverter_cache["PRIMARY001"] = mock_inverter
+        coordinator._firmware_cache["PRIMARY001"] = "FAAB-2525"
+
+        with patch(
+            "custom_components.eg4_web_monitor.coordinator_local._build_runtime_sensor_mapping",
+            return_value={"battery_voltage": 53.7, "state_of_charge": 93},
+        ):
+            processed: dict[str, Any] = {
+                "devices": {},
+                "parallel_groups": {},
+                "parameters": {},
+            }
+            device_availability: dict[str, bool] = {}
+            await coordinator._process_single_local_device(
+                config=parallel_config_entry.data[CONF_LOCAL_TRANSPORTS][0],
+                processed=processed,
+                device_availability=device_availability,
+            )
+
+        device = processed["devices"]["PRIMARY001"]
+
+        # Primary should have battery bank sensors
+        assert "battery_bank_soc" in device["sensors"]
+        assert "battery_bank_voltage" in device["sensors"]
+        assert "battery_bank_count" in device["sensors"]
+        assert device["sensors"]["battery_bank_count"] == 4
+
+    async def test_shared_battery_logged_once(self, hass, parallel_config_entry):
+        """Info log for shared battery skip should fire only once per serial."""
+        coordinator = EG4DataUpdateCoordinator(hass, parallel_config_entry)
+
+        # Simulate: serial already logged
+        coordinator._shared_battery_logged.add("SECONDARY01")
+
+        # The set prevents re-logging on subsequent invocations
+        assert "SECONDARY01" in coordinator._shared_battery_logged
+
+    async def test_non_parallel_inverter_with_zero_battery_count_skips_bank(
+        self,
+        hass,
+    ):
+        """Standalone inverter with battery_count=0 also skips battery bank.
+
+        Battery bank creation is gated purely on battery_count, regardless of
+        parallel role.  If the count is 0/None, no battery bank device is created.
+        """
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            title="EG4 - Standalone",
+            data={
+                CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+                CONF_DST_SYNC: False,
+                CONF_LIBRARY_DEBUG: False,
+                CONF_LOCAL_TRANSPORTS: [
+                    {
+                        "serial": "STANDALONE1",
+                        "host": "192.168.1.100",
+                        "port": 502,
+                        "transport_type": "modbus_tcp",
+                        "inverter_family": "EG4_HYBRID",
+                        "model": "FlexBOSS21",
+                    },
+                ],
+            },
+            options={},
+            entry_id="standalone_test",
+        )
+        entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, entry)
+        coordinator._local_static_phase_done = True
+
+        mock_runtime = MagicMock()
+        mock_runtime.parallel_number = 0  # No parallel group
+        mock_runtime.parallel_master_slave = 0  # Not a secondary
+        mock_runtime.parallel_phase = 0
+
+        mock_battery_data = MagicMock()
+        mock_battery_data.battery_count = None  # Temporarily 0
+        mock_battery_data.voltage = 53.7
+        mock_battery_data.current = 0.0
+        mock_battery_data.soc = 50
+        mock_battery_data.charge_power = 0
+        mock_battery_data.discharge_power = 0
+        mock_battery_data.battery_power = 0
+        mock_battery_data.max_capacity = None
+        mock_battery_data.current_capacity = None
+        mock_battery_data.remain_capacity = None
+        mock_battery_data.full_capacity = None
+        mock_battery_data.capacity_percent = None
+        mock_battery_data.status = "Idle"
+        mock_battery_data.min_soh = None
+        mock_battery_data.max_cell_temp = None
+        mock_battery_data.temp_delta = None
+        mock_battery_data.cell_voltage_delta_max = None
+        mock_battery_data.soc_delta = None
+        mock_battery_data.soh_delta = None
+        mock_battery_data.voltage_delta = None
+        mock_battery_data.cycle_count_delta = None
+        mock_battery_data.batteries = []
+
+        mock_inverter = MagicMock()
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter._transport_runtime = mock_runtime
+        mock_inverter._transport_energy = None
+        mock_inverter._transport_battery = mock_battery_data
+        mock_inverter._transport = MagicMock()
+        mock_inverter._transport.is_connected = True
+        mock_inverter._transport.host = "192.168.1.100"
+        mock_inverter._transport.disconnect = AsyncMock()
+        mock_inverter.consumption_power = None
+        mock_inverter.battery_power = None
+        mock_inverter.rectifier_power = None
+        mock_inverter.power_to_user = None
+        mock_inverter.eps_power_l1 = None
+        mock_inverter.eps_power_l2 = None
+
+        coordinator._inverter_cache["STANDALONE1"] = mock_inverter
+        coordinator._firmware_cache["STANDALONE1"] = "FAAB-2525"
+
+        with patch(
+            "custom_components.eg4_web_monitor.coordinator_local._build_runtime_sensor_mapping",
+            return_value={"state_of_charge": 50},
+        ):
+            processed: dict[str, Any] = {
+                "devices": {},
+                "parallel_groups": {},
+                "parameters": {},
+            }
+            device_availability: dict[str, bool] = {}
+            await coordinator._process_single_local_device(
+                config=entry.data[CONF_LOCAL_TRANSPORTS][0],
+                processed=processed,
+                device_availability=device_availability,
+            )
+
+        device = processed["devices"]["STANDALONE1"]
+
+        # battery_count=0 → no battery bank sensors regardless of parallel status
+        bank_keys = [k for k in device["sensors"] if k.startswith("battery_bank_")]
+        assert bank_keys == [], f"Unexpected battery bank sensors: {bank_keys}"
+
+
+class TestBatteryBankCountSuppression:
+    """Tests for battery bank suppression when battery_count=0 (issue #169)."""
+
+    @staticmethod
+    def _make_detection_entry(hass: Any, serial: str, entry_id: str) -> MockConfigEntry:
+        """Build a LOCAL config entry with one secondary inverter for detection tests."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            title="EG4 - Detection Test",
+            data={
+                CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+                CONF_DST_SYNC: False,
+                CONF_LIBRARY_DEBUG: False,
+                CONF_LOCAL_TRANSPORTS: [
+                    {
+                        "serial": serial,
+                        "host": "192.168.1.100",
+                        "port": 502,
+                        "transport_type": "modbus_tcp",
+                        "inverter_family": "EG4_HYBRID",
+                        "model": "FlexBOSS21",
+                        "parallel_number": 2,
+                        "parallel_master_slave": 2,
+                    },
+                ],
+            },
+            options={},
+            entry_id=entry_id,
+        )
+        entry.add_to_hass(hass)
+        return entry
+
+    @staticmethod
+    def _make_mock_inverter(*, battery_count: int | None = None) -> MagicMock:
+        """Build a mock inverter with shared-battery secondary defaults."""
+        mock_runtime = MagicMock()
+        mock_runtime.parallel_number = 2
+        mock_runtime.parallel_master_slave = 2
+        mock_runtime.parallel_phase = 0
+
+        mock_battery_data = MagicMock()
+        mock_battery_data.battery_count = battery_count
+        mock_battery_data.batteries = []
+
+        mock_inverter = MagicMock()
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter._transport_runtime = mock_runtime
+        mock_inverter._transport_energy = None
+        mock_inverter._transport_battery = mock_battery_data
+        mock_inverter._transport = MagicMock()
+        mock_inverter._transport.is_connected = True
+        mock_inverter._transport.host = "192.168.1.100"
+        mock_inverter._transport.disconnect = AsyncMock()
+        mock_inverter.consumption_power = None
+        mock_inverter.battery_power = None
+        mock_inverter.rectifier_power = None
+        mock_inverter.power_to_user = None
+        mock_inverter.eps_power_l1 = None
+        mock_inverter.eps_power_l2 = None
+        return mock_inverter
+
+    async def test_secondary_no_battery_bank_sensors(self, hass):
+        """Secondary with battery_count=0 gets no battery_bank_* sensors."""
+        serial = "INVPARAM01"
+        entry = self._make_detection_entry(hass, serial, "param_test")
+        coordinator = EG4DataUpdateCoordinator(hass, entry)
+        coordinator._local_static_phase_done = True
+
+        mock_inverter = self._make_mock_inverter(battery_count=None)
+        coordinator._inverter_cache[serial] = mock_inverter
+        coordinator._firmware_cache[serial] = "FAAB-2525"
+
+        with patch(
+            "custom_components.eg4_web_monitor.coordinator_local._build_runtime_sensor_mapping",
+            return_value={"state_of_charge": 50},
+        ):
+            processed: dict[str, Any] = {
+                "devices": {},
+                "parallel_groups": {},
+                "parameters": {serial: {"FUNC_BAT_SHARED": 1}},
+            }
+            await coordinator._process_single_local_device(
+                config=entry.data[CONF_LOCAL_TRANSPORTS][0],
+                processed=processed,
+                device_availability={},
+            )
+
+        device = processed["devices"][serial]
+        bank_keys = [k for k in device["sensors"] if k.startswith("battery_bank_")]
+        assert bank_keys == [], f"Unexpected battery bank sensors: {bank_keys}"
+
+    async def test_secondary_with_battery_count_zero_explicit(self, hass):
+        """Secondary with battery_count=0 (explicit zero) also skips bank."""
+        serial = "INVZERO01"
+        entry = self._make_detection_entry(hass, serial, "zero_test")
+        coordinator = EG4DataUpdateCoordinator(hass, entry)
+        coordinator._local_static_phase_done = True
+
+        mock_inverter = self._make_mock_inverter(battery_count=0)
+        coordinator._inverter_cache[serial] = mock_inverter
+        coordinator._firmware_cache[serial] = "FAAB-2525"
+
+        with patch(
+            "custom_components.eg4_web_monitor.coordinator_local._build_runtime_sensor_mapping",
+            return_value={"state_of_charge": 50},
+        ):
+            processed: dict[str, Any] = {
+                "devices": {},
+                "parallel_groups": {},
+                "parameters": {},
+            }
+            await coordinator._process_single_local_device(
+                config=entry.data[CONF_LOCAL_TRANSPORTS][0],
+                processed=processed,
+                device_availability={},
+            )
+
+        device = processed["devices"][serial]
+        bank_keys = [k for k in device["sensors"] if k.startswith("battery_bank_")]
+        assert bank_keys == []
+
+    async def test_parallel_group_counts_only_primary_batteries(self, hass):
+        """Parallel group battery count comes from primary only (secondary has 0)."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            title="EG4 - PG Test",
+            data={
+                CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+                CONF_DST_SYNC: False,
+                CONF_LIBRARY_DEBUG: False,
+                CONF_LOCAL_TRANSPORTS: [
+                    {
+                        "serial": "PRIMARY001",
+                        "host": "192.168.1.100",
+                        "port": 502,
+                        "transport_type": "modbus_tcp",
+                        "inverter_family": "EG4_HYBRID",
+                        "model": "FlexBOSS18",
+                        "parallel_number": 2,
+                        "parallel_master_slave": 1,
+                    },
+                    {
+                        "serial": "SECONDARY01",
+                        "host": "192.168.1.101",
+                        "port": 502,
+                        "transport_type": "modbus_tcp",
+                        "inverter_family": "EG4_HYBRID",
+                        "model": "FlexBOSS21",
+                        "parallel_number": 2,
+                        "parallel_master_slave": 2,
+                    },
+                ],
+            },
+            options={},
+            entry_id="pg_test",
+        )
+        entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, entry)
+
+        processed: dict[str, Any] = {
+            "devices": {
+                "PRIMARY001": {
+                    "type": "inverter",
+                    "model": "FlexBOSS18",
+                    "serial": "PRIMARY001",
+                    "sensors": {
+                        "battery_bank_count": 4,
+                        "battery_bank_current": 30.0,
+                        "battery_bank_max_capacity": 280.0,
+                        "battery_bank_current_capacity": 260.0,
+                        "state_of_charge": 93,
+                    },
+                    "batteries": {"bat1": {"soc": 93}},
+                    "parallel_number": 2,
+                    "parallel_master_slave": 1,
+                },
+                "SECONDARY01": {
+                    "type": "inverter",
+                    "model": "FlexBOSS21",
+                    "serial": "SECONDARY01",
+                    "sensors": {
+                        "state_of_charge": 93,
+                        "battery_voltage": 53.7,
+                    },
+                    "batteries": {},
+                    "parallel_number": 2,
+                    "parallel_master_slave": 2,
+                },
+            },
+            "parallel_groups": {},
+            "parameters": {},
+        }
+
+        await coordinator._process_local_parallel_groups(processed)
+
+        pg = processed["devices"].get("parallel_group_a", {})
+        pg_sensors = pg.get("sensors", {})
+
+        # Battery count = 4 (primary only, secondary has none)
+        assert pg_sensors.get("parallel_battery_count") == 4
+        assert pg_sensors.get("parallel_battery_current") == 30.0
+
+
+class TestBatteryRRCacheFallback:
+    """Regression tests for issue #180: individual batteries become unavailable.
+
+    When the WiFi dongle fails to read individual battery registers (5002+),
+    ``_battery_slot_ceiling`` was permanently set to 0, causing all subsequent
+    polls to return ``battery_data.batteries = []``.  The coordinator now falls
+    back to the round-robin cache so entities stay available during transient
+    transport failures.
+    """
+
+    @staticmethod
+    def _make_config_entry(hass: Any, serial: str) -> MockConfigEntry:
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            title="EG4 - Cache Fallback Test",
+            data={
+                CONF_CONNECTION_TYPE: CONNECTION_TYPE_LOCAL,
+                CONF_DST_SYNC: False,
+                CONF_LIBRARY_DEBUG: False,
+                CONF_LOCAL_TRANSPORTS: [
+                    {
+                        "serial": serial,
+                        "host": "192.168.1.100",
+                        "port": 8899,
+                        "transport_type": "wifi_dongle",
+                        "inverter_family": "EG4_HYBRID",
+                        "model": "FlexBOSS21",
+                        "parallel_number": 0,
+                        "parallel_master_slave": 0,
+                    },
+                ],
+            },
+            options={},
+            entry_id="cache_fallback_test",
+        )
+        entry.add_to_hass(hass)
+        return entry
+
+    @staticmethod
+    def _make_mock_inverter(*, battery_count: int, batteries: list[Any]) -> MagicMock:
+        mock_runtime = MagicMock()
+        mock_runtime.parallel_number = 0
+        mock_runtime.parallel_master_slave = 0
+        mock_runtime.parallel_phase = 0
+
+        mock_battery_data = MagicMock()
+        mock_battery_data.battery_count = battery_count
+        mock_battery_data.batteries = batteries
+
+        mock_inverter = MagicMock()
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter._transport_runtime = mock_runtime
+        mock_inverter._transport_energy = None
+        mock_inverter._transport_battery = mock_battery_data
+        mock_inverter._transport = MagicMock()
+        mock_inverter._transport.is_connected = True
+        mock_inverter._transport.host = "192.168.1.100"
+        mock_inverter._transport.disconnect = AsyncMock()
+        mock_inverter.consumption_power = None
+        mock_inverter.battery_power = None
+        mock_inverter.rectifier_power = None
+        mock_inverter.power_to_user = None
+        mock_inverter.eps_power_l1 = None
+        mock_inverter.eps_power_l2 = None
+        return mock_inverter
+
+    async def test_cache_fallback_when_batteries_empty_this_poll(
+        self, hass: Any
+    ) -> None:
+        """When battery_data.batteries is empty but cache has data, use cache.
+
+        Regression test for issue #180: after a transient WiFi dongle read
+        failure, individual battery entities must stay available (not go
+        unavailable) by falling back to the round-robin cache.
+        """
+        serial = "DONGLE001"
+        entry = self._make_config_entry(hass, serial)
+        coordinator = EG4DataUpdateCoordinator(hass, entry)
+        coordinator._local_static_phase_done = True
+
+        # Pre-populate the round-robin cache with 4 batteries (as if a
+        # previous successful poll populated them).
+        coordinator._battery_rr_cache[serial] = {
+            f"{serial}-01": {"soc": 80, "voltage": 52.8},
+            f"{serial}-02": {"soc": 79, "voltage": 52.7},
+            f"{serial}-03": {"soc": 81, "voltage": 52.9},
+            f"{serial}-04": {"soc": 78, "voltage": 52.6},
+        }
+
+        # This poll: battery_data exists (bank sensors work) but batteries=[]
+        # (individual register read failed, _battery_slot_ceiling was set to 0)
+        mock_inverter = self._make_mock_inverter(battery_count=4, batteries=[])
+        coordinator._inverter_cache[serial] = mock_inverter
+        coordinator._firmware_cache[serial] = "FAAB-2525"
+
+        with (
+            patch(
+                "custom_components.eg4_web_monitor.coordinator_local._build_runtime_sensor_mapping",
+                return_value={"state_of_charge": 79},
+            ),
+            patch(
+                "custom_components.eg4_web_monitor.coordinator_local._build_battery_bank_sensor_mapping",
+                return_value={"battery_bank_count": 4, "battery_bank_voltage": 52.7},
+            ),
+        ):
+            processed: dict[str, Any] = {
+                "devices": {},
+                "parallel_groups": {},
+                "parameters": {},
+            }
+            await coordinator._process_single_local_device(
+                config=entry.data[CONF_LOCAL_TRANSPORTS][0],
+                processed=processed,
+                device_availability={},
+            )
+
+        device = processed["devices"][serial]
+        # Cache fallback: 4 batteries should be available from the cache
+        assert len(device["batteries"]) == 4, (
+            "Expected 4 batteries from RR cache fallback, "
+            f"got {len(device['batteries'])}: {list(device['batteries'].keys())}"
+        )
+        assert f"{serial}-01" in device["batteries"]
+        assert f"{serial}-04" in device["batteries"]
+
+    async def test_no_fallback_when_cache_empty(self, hass: Any) -> None:
+        """When both poll batteries and cache are empty, batteries dict is empty."""
+        serial = "DONGLE002"
+        entry = self._make_config_entry(hass, serial)
+        coordinator = EG4DataUpdateCoordinator(hass, entry)
+        coordinator._local_static_phase_done = True
+        # No pre-populated cache
+
+        mock_inverter = self._make_mock_inverter(battery_count=4, batteries=[])
+        coordinator._inverter_cache[serial] = mock_inverter
+        coordinator._firmware_cache[serial] = "FAAB-2525"
+
+        with (
+            patch(
+                "custom_components.eg4_web_monitor.coordinator_local._build_runtime_sensor_mapping",
+                return_value={"state_of_charge": 50},
+            ),
+            patch(
+                "custom_components.eg4_web_monitor.coordinator_local._build_battery_bank_sensor_mapping",
+                return_value={"battery_bank_count": 4},
+            ),
+        ):
+            processed: dict[str, Any] = {
+                "devices": {},
+                "parallel_groups": {},
+                "parameters": {},
+            }
+            await coordinator._process_single_local_device(
+                config=entry.data[CONF_LOCAL_TRANSPORTS][0],
+                processed=processed,
+                device_availability={},
+            )
+
+        device = processed["devices"][serial]
+        # No fallback possible — batteries stays empty
+        assert device["batteries"] == {}

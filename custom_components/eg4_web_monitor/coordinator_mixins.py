@@ -237,6 +237,10 @@ if TYPE_CHECKING:
         def _rebuild_inverter_cache(self) -> None: ...
 
         # ── DeviceProcessingMixin methods ──
+        def _get_device_grid_type(self, serial: str) -> str | None: ...
+        async def _resolve_local_firmware(
+            self, device: Any, cloud_version: str
+        ) -> str: ...
         async def _process_inverter_object(
             self, inverter: BaseInverter
         ) -> dict[str, Any]: ...
@@ -289,8 +293,19 @@ if TYPE_CHECKING:
             self, inverter: Any, transport_type: str
         ) -> None: ...
 
+        # ── LocalTransportMixin attributes ──
+        _battery_rr_cache: dict[str, dict[str, dict[str, Any]]]
+        _battery_serial_to_key: dict[str, dict[str, str]]
+        _battery_next_index: dict[str, int]
+        _shared_battery_logged: set[str]
+
         # ── LocalTransportMixin methods ──
         async def _attach_local_transports_to_station(self) -> None: ...
+        def _merge_round_robin_batteries(
+            self,
+            inverter_serial: str,
+            transport_batteries: list[Any],
+        ) -> dict[str, dict[str, Any]]: ...
 
 else:
     _MixinBase = object
@@ -381,6 +396,56 @@ class DeviceProcessingMixin(_MixinBase):
                 return transport.get("grid_type")
         return None
 
+    async def _resolve_local_firmware(self, device: Any, cloud_version: str) -> str:
+        """Return firmware version, preferring local register over cloud API.
+
+        The cloud API can report incorrect firmware values.  When a local
+        transport is attached, read holding registers 7-10 and cache the
+        result.  If the transport lacks ``read_firmware_version`` entirely,
+        a sentinel is cached so we never re-check.  If the read raises an
+        exception (e.g. Waveshare bus stall on first refresh), no sentinel
+        is cached so the read is retried on the next poll cycle.
+
+        Args:
+            device: BaseInverter or MIDDevice with optional ``_transport``.
+            cloud_version: Firmware version string from the cloud API.
+
+        Returns:
+            Local firmware version if available, otherwise cloud_version.
+        """
+        transport = getattr(device, "_transport", None)
+        if transport is None:
+            return cloud_version
+
+        serial: str = device.serial_number
+        cached = self._firmware_cache.get(serial)
+        if cached is not None:
+            return cached if cached else cloud_version
+
+        # First encounter — read from local transport and cache.
+        read_fw = getattr(transport, "read_firmware_version", None)
+        if read_fw is None:
+            # Transport doesn't support firmware reads (permanent).
+            # Cache sentinel so we don't re-check every cycle.
+            self._firmware_cache[serial] = ""
+            return cloud_version
+        try:
+            local_fw: str = await read_fw()
+            if local_fw:
+                self._firmware_cache[serial] = local_fw
+                return local_fw
+        except Exception as exc:
+            # Transient failure (e.g. Waveshare bus stall on first refresh).
+            # Do NOT cache sentinel — allow retry on the next poll cycle
+            # so a brief startup stall doesn't permanently suppress local
+            # firmware reads.
+            _LOGGER.debug(
+                "Could not read local firmware for %s: %s",
+                serial,
+                exc,
+            )
+        return cloud_version
+
     async def _process_inverter_object(
         self, inverter: "BaseInverter"
     ) -> dict[str, Any]:
@@ -431,6 +496,9 @@ class DeviceProcessingMixin(_MixinBase):
         # Get model and firmware from properties
         model = getattr(inverter, "model", "Unknown")
         firmware_version = getattr(inverter, "firmware_version", "1.0.0")
+        firmware_version = await self._resolve_local_firmware(
+            inverter, firmware_version
+        )
 
         # Check for firmware updates (pylxpweb 0.3.7+)
         firmware_update_info = None
@@ -540,8 +608,22 @@ class DeviceProcessingMixin(_MixinBase):
                 value = getattr(transport_runtime, runtime_attr, None)
                 if value is not None:
                     sensors[sensor_key] = value
-            if (val := getattr(inverter, "total_load_power", None)) is not None:
-                sensors["total_load_power"] = val
+
+        # Overlay transport-exclusive energy sensors (Modbus-only, regs 133-138).
+        # Cloud API does not provide per-leg EPS energy; only available via Modbus.
+        transport_energy = getattr(inverter, "_transport_energy", None)
+        if transport_energy is not None:
+            sensors = processed["sensors"]
+            _ENERGY_OVERLAY = (
+                ("eps_energy_today_l1", "eps_l1_energy_today"),
+                ("eps_energy_today_l2", "eps_l2_energy_today"),
+                ("eps_energy_total_l1", "eps_l1_energy_total"),
+                ("eps_energy_total_l2", "eps_l2_energy_total"),
+            )
+            for sensor_key, energy_attr in _ENERGY_OVERLAY:
+                value = getattr(transport_energy, energy_attr, None)
+                if value is not None:
+                    sensors[sensor_key] = value
 
         # Add firmware_version as diagnostic sensor
         processed["sensors"]["firmware_version"] = firmware_version
@@ -566,8 +648,6 @@ class DeviceProcessingMixin(_MixinBase):
         # Note: load_power sensor removed - it was confusingly named as grid_import
         # Use consumption_power instead, which represents actual household consumption
         # calculated as: pv_total + grid_import - grid_export (clamped to >= 0)
-        #
-        # total_load_power is now computed in pylxpweb as alias for consumption_power
 
         # Add legacy ac_voltage sensor
         if hasattr(inverter, "eps_voltage_r"):
@@ -585,41 +665,71 @@ class DeviceProcessingMixin(_MixinBase):
         # Prefer transport battery data (local Modbus) over cloud battery_bank
         # In hybrid mode, _transport_battery is refreshed each cycle while
         # _battery_bank may be stale from initial cloud station load
+        #
+        # Skip battery bank creation when battery_count is 0 or None.
+        # In parallel systems with shared batteries, the secondary inverter
+        # reports battery_count=0 (cloud: totalNumber=0, local: reg 96=0)
+        # because the CAN bus is wired only to the primary.  Creating a
+        # battery bank device with no actual batteries leads to
+        # Unknown/Unavailable entities (issue #169).
         transport_battery = getattr(inverter, "_transport_battery", None)
         if transport_battery:
-            _LOGGER.debug(
-                "Battery bank for %s: using LOCAL transport data (hybrid/local mode)",
-                inverter.serial_number,
-            )
-            try:
-                battery_bank_sensors = _build_battery_bank_sensor_mapping(
-                    transport_battery
-                )
-                processed["sensors"].update(battery_bank_sensors)
-            except Exception as e:
-                _LOGGER.warning(
-                    "Error extracting transport battery bank data for inverter %s: %s",
+            raw_count = getattr(transport_battery, "battery_count", None)
+            bank_count = int(raw_count) if raw_count else 0
+            if bank_count > 0:
+                _LOGGER.debug(
+                    "Battery bank for %s: using LOCAL transport data "
+                    "(hybrid/local mode, battery_count=%d)",
                     inverter.serial_number,
-                    e,
+                    bank_count,
+                )
+                try:
+                    battery_bank_sensors = _build_battery_bank_sensor_mapping(
+                        transport_battery
+                    )
+                    processed["sensors"].update(battery_bank_sensors)
+                except Exception as e:
+                    _LOGGER.warning(
+                        "Error extracting transport battery bank data for inverter %s: %s",
+                        inverter.serial_number,
+                        e,
+                    )
+            else:
+                _LOGGER.debug(
+                    "Battery bank for %s: skipping — transport battery_count=%s "
+                    "(shared battery secondary)",
+                    inverter.serial_number,
+                    bank_count,
                 )
         else:
             # Fall back to cloud battery_bank for cloud-only mode
             battery_bank = getattr(inverter, "_battery_bank", None)
             if battery_bank:
-                _LOGGER.debug(
-                    "Battery bank for %s: using CLOUD data (no local transport attached)",
-                    inverter.serial_number,
-                )
-                try:
-                    battery_bank_sensors = self._extract_battery_bank_from_object(
-                        battery_bank
-                    )
-                    processed["sensors"].update(battery_bank_sensors)
-                except Exception as e:
-                    _LOGGER.warning(
-                        "Error extracting battery bank data for inverter %s: %s",
+                raw_count = getattr(battery_bank, "battery_count", None)
+                bank_count = int(raw_count) if raw_count else 0
+                if bank_count > 0:
+                    _LOGGER.debug(
+                        "Battery bank for %s: using CLOUD data (battery_count=%d)",
                         inverter.serial_number,
-                        e,
+                        bank_count,
+                    )
+                    try:
+                        battery_bank_sensors = self._extract_battery_bank_from_object(
+                            battery_bank
+                        )
+                        processed["sensors"].update(battery_bank_sensors)
+                    except Exception as e:
+                        _LOGGER.warning(
+                            "Error extracting battery bank data for inverter %s: %s",
+                            inverter.serial_number,
+                            e,
+                        )
+                else:
+                    _LOGGER.debug(
+                        "Battery bank for %s: skipping — cloud battery_count=%s "
+                        "(shared battery secondary)",
+                        inverter.serial_number,
+                        bank_count,
                     )
             else:
                 _LOGGER.debug(
@@ -743,6 +853,17 @@ class DeviceProcessingMixin(_MixinBase):
             "eps_power": "eps_power",
             "eps_power_l1": "eps_power_l1",
             "eps_power_l2": "eps_power_l2",
+            "eps_apparent_power_l1": "eps_apparent_power_l1",
+            "eps_apparent_power_l2": "eps_apparent_power_l2",
+            # US split-phase per-leg power
+            "inverter_power_l1": "inverter_power_l1",
+            "inverter_power_l2": "inverter_power_l2",
+            "rectifier_power_l1": "rectifier_power_l1",
+            "rectifier_power_l2": "rectifier_power_l2",
+            "grid_export_power_l1": "grid_export_power_l1",
+            "grid_export_power_l2": "grid_export_power_l2",
+            "grid_import_power_l1": "grid_import_power_l1",
+            "grid_import_power_l2": "grid_import_power_l2",
             # Voltage sensors
             "pv1_voltage": "pv1_voltage",
             "pv2_voltage": "pv2_voltage",
@@ -755,6 +876,8 @@ class DeviceProcessingMixin(_MixinBase):
             "eps_voltage_s": "eps_voltage_s",
             "eps_voltage_t": "eps_voltage_t",
             "generator_voltage": "generator_voltage",
+            "generator_l1_voltage": "generator_voltage_l1",
+            "generator_l2_voltage": "generator_voltage_l2",
             "bus1_voltage": "bus1_voltage",
             "bus2_voltage": "bus2_voltage",
             # Frequency sensors
@@ -1050,6 +1173,8 @@ class DeviceProcessingMixin(_MixinBase):
             # Status and metadata
             "battery_count": "battery_bank_count",
             "status": "battery_bank_status",
+            # Bank-level BMS register data (always available, no CAN bus needed)
+            "cycle_count": "battery_bank_cycle_count",
             # Cross-battery diagnostics (pylxpweb >= 0.6.7)
             "soc_delta": "battery_bank_soc_delta",
             "min_soh": "battery_bank_min_soh",
@@ -1093,6 +1218,32 @@ class DeviceProcessingMixin(_MixinBase):
         property_map = self._get_parallel_group_property_map()
         processed["sensors"] = _map_device_properties(group, property_map)
         processed["sensors"]["parallel_group_last_polled"] = dt_util.utcnow()
+
+        # Override consumption with energy balance when inverters have local
+        # transport.  pylxpweb's _compute_energy_from_inverters() historically
+        # summed load_energy_today (AC charge rectifier energy, reg 32) instead
+        # of household consumption.  Energy balance is the correct formula.
+        # This mirrors the individual inverter override at line ~507.
+        # See: eg4_web_monitor issue #163
+        if any(
+            getattr(inv, "_transport_energy", None) is not None
+            for inv in getattr(group, "inverters", [])
+        ):
+            sensors = processed["sensors"]
+            sensors["consumption"] = _energy_balance(
+                sensors.get("yield"),
+                sensors.get("discharging"),
+                sensors.get("grid_import"),
+                sensors.get("charging"),
+                sensors.get("grid_export"),
+            )
+            sensors["consumption_lifetime"] = _energy_balance(
+                sensors.get("yield_lifetime"),
+                sensors.get("discharging_lifetime"),
+                sensors.get("grid_import_lifetime"),
+                sensors.get("charging_lifetime"),
+                sensors.get("grid_export_lifetime"),
+            )
 
         return processed
 
@@ -1146,6 +1297,9 @@ class DeviceProcessingMixin(_MixinBase):
         """
         model = getattr(mid_device, "model", "GridBOSS")
         firmware_version = getattr(mid_device, "firmware_version", "1.0.0")
+        firmware_version = await self._resolve_local_firmware(
+            mid_device, firmware_version
+        )
 
         firmware_update_info = None
         try:
@@ -1258,6 +1412,16 @@ class DeviceProcessingMixin(_MixinBase):
             "smart_port2_status": "smart_port2_status",
             "smart_port3_status": "smart_port3_status",
             "smart_port4_status": "smart_port4_status",
+            # Smart Port Current sensors (Modbus regs 18-25, local-only)
+            # Mapped as smart_load by default; filter remaps to ac_couple
+            "smart_port1_l1_current": "smart_load1_current_l1",
+            "smart_port1_l2_current": "smart_load1_current_l2",
+            "smart_port2_l1_current": "smart_load2_current_l1",
+            "smart_port2_l2_current": "smart_load2_current_l2",
+            "smart_port3_l1_current": "smart_load3_current_l1",
+            "smart_port3_l2_current": "smart_load3_current_l2",
+            "smart_port4_l1_current": "smart_load4_current_l1",
+            "smart_port4_l2_current": "smart_load4_current_l2",
             # Smart Load Power sensors (runtime data - L1/L2 have valid data)
             # Property names match MIDRuntimePropertiesMixin in pylxpweb 0.5.5+
             "smart_load1_l1_power": "smart_load1_power_l1",
@@ -1415,45 +1579,48 @@ class DeviceProcessingMixin(_MixinBase):
 
         sensors_to_remove: list[str] = []
         for port, status in smart_port_statuses.items():
-            smart_load_power_keys = [
+            # Build per-port key groups for smart_load and ac_couple
+            smart_load_keys = [
                 f"smart_load{port}_power_l1",
                 f"smart_load{port}_power_l2",
                 f"smart_load{port}_power",
-            ]
-            smart_load_energy_keys = [
+                f"smart_load{port}_current_l1",
+                f"smart_load{port}_current_l2",
                 f"smart_load{port}_today",
                 f"smart_load{port}_total",
             ]
-            ac_couple_power_keys = [
+            ac_couple_keys = [
                 f"ac_couple{port}_power_l1",
                 f"ac_couple{port}_power_l2",
                 f"ac_couple{port}_power",
-            ]
-            ac_couple_energy_keys = [
+                f"ac_couple{port}_current_l1",
+                f"ac_couple{port}_current_l2",
                 f"ac_couple{port}_today",
                 f"ac_couple{port}_total",
             ]
 
             if status is None or status not in _SMART_PORT_STATUS_LABELS or status == 0:
                 # Unused or invalid port - remove all sensors
-                sensors_to_remove.extend(smart_load_power_keys)
-                sensors_to_remove.extend(smart_load_energy_keys)
-                sensors_to_remove.extend(ac_couple_power_keys)
-                sensors_to_remove.extend(ac_couple_energy_keys)
+                sensors_to_remove.extend(smart_load_keys)
+                sensors_to_remove.extend(ac_couple_keys)
             elif status == 1:
                 # Smart Load mode: ensure smart_load power keys exist,
-                # remove ac_couple power + energy (wrong type for this port)
-                for key in smart_load_power_keys:
+                # remove ac_couple sensors (wrong type for this port)
+                for key in smart_load_keys[:3]:  # power_l1, power_l2, power
                     sensors.setdefault(key, 0.0)
-                sensors_to_remove.extend(ac_couple_power_keys)
-                sensors_to_remove.extend(ac_couple_energy_keys)
+                sensors_to_remove.extend(ac_couple_keys)
             elif status == 2:
-                # AC Couple mode: ensure ac_couple power keys exist,
-                # remove smart_load power + energy (wrong type for this port)
-                for key in ac_couple_power_keys:
+                # AC Couple mode: remap smart_load current → ac_couple current,
+                # ensure ac_couple power keys exist,
+                # remove smart_load sensors (wrong type for this port)
+                for key in ac_couple_keys[:3]:  # power_l1, power_l2, power
                     sensors.setdefault(key, 0.0)
-                sensors_to_remove.extend(smart_load_power_keys)
-                sensors_to_remove.extend(smart_load_energy_keys)
+                # Remap current values from smart_load to ac_couple
+                for phase in ("l1", "l2"):
+                    val = sensors.pop(f"smart_load{port}_current_{phase}", None)
+                    if val is not None:
+                        sensors[f"ac_couple{port}_current_{phase}"] = val
+                sensors_to_remove.extend(smart_load_keys)
 
         if sensors_to_remove:
             _LOGGER.debug(
@@ -1671,8 +1838,11 @@ class DeviceInfoMixin(_MixinBase):
 
         sensors = device_data.get("sensors", {})
 
-        # Check if any battery_bank sensors exist (not just count > 0)
-        # Aggregate data like soc, voltage can exist even when totalNumber=0
+        # Check if battery bank sensors exist AND battery_count > 0.
+        # In shared-battery parallel systems, the secondary inverter has
+        # battery_count=0 (no batteries directly connected).  We must not
+        # create a battery bank device for it — doing so yields
+        # Unknown/Unavailable entities (issue #169).
         has_battery_bank_data = any(
             key.startswith("battery_bank_") for key in sensors.keys()
         )
@@ -1680,6 +1850,8 @@ class DeviceInfoMixin(_MixinBase):
             return None
 
         battery_count = sensors.get("battery_bank_count") or 0
+        if battery_count == 0:
+            return None
         model = device_data.get("model", "Unknown")
 
         device_info: DeviceInfo = {
@@ -1949,6 +2121,8 @@ class BackgroundTaskMixin(_MixinBase):
         # Mark removal function as used - the one-time listener auto-removes itself
         self._shutdown_listener_remove = None
 
+        await self._disconnect_all_transports()
+
         if hasattr(self, "_debounced_refresh") and self._debounced_refresh:
             self._debounced_refresh.async_cancel()
             await asyncio.sleep(0)
@@ -1958,7 +2132,18 @@ class BackgroundTaskMixin(_MixinBase):
         _LOGGER.debug("All background tasks cancelled and cleaned up")
 
     async def async_shutdown(self) -> None:
-        """Clean up background tasks and event listeners on shutdown."""
+        """Clean up transports, background tasks, and event listeners on shutdown.
+
+        Transport disconnection happens FIRST so that any in-flight
+        asyncio.gather() waiting on Modbus/dongle I/O unblocks immediately
+        (closed socket raises an exception instead of waiting for timeout).
+        Without this, options-change reloads time out because the
+        DataUpdateCoordinator's refresh task can't complete.
+        """
+        # 1. Disconnect all transports to unblock in-flight I/O
+        await self._disconnect_all_transports()
+
+        # 2. Remove our homeassistant_stop event listener
         # Only try to remove listener if:
         # - It exists (not None)
         # - The shutdown event hasn't fired (which auto-removes the one-time listener)
@@ -1976,8 +2161,61 @@ class BackgroundTaskMixin(_MixinBase):
                 # Mark as removed to prevent double-removal attempts
                 self._shutdown_listener_remove = None
 
+        # 3. Cancel our background tasks (parameter loads, DST sync, etc.)
         await self._cancel_background_tasks()
+
+        # 4. Call base class shutdown to set _shutdown_requested, unsub
+        #    the refresh timer, and shut down the debounced refresh.
+        await super().async_shutdown()  # type: ignore[misc]
         _LOGGER.debug("Coordinator shutdown complete, all background tasks cleaned up")
+
+    async def _disconnect_all_transports(self) -> None:
+        """Disconnect all active transports (legacy and cached).
+
+        Covers three transport sources:
+        1. Legacy single-device _modbus_transport / _dongle_transport
+        2. Inverters in _inverter_cache (LOCAL/HYBRID mode)
+        3. MID devices in _mid_device_cache (LOCAL/HYBRID mode)
+        """
+        # Legacy transports (old single-device config format)
+        for attr in ("_modbus_transport", "_dongle_transport"):
+            transport = getattr(self, attr, None)
+            if transport is not None and getattr(transport, "is_connected", False):
+                try:
+                    await transport.disconnect()
+                    _LOGGER.debug("Disconnected legacy transport %s", attr)
+                except Exception:
+                    _LOGGER.debug(
+                        "Error disconnecting %s (ignored)", attr, exc_info=True
+                    )
+
+        # Cached inverter transports (LOCAL/HYBRID with local_transports config)
+        for serial, inverter in self._inverter_cache.items():
+            transport = getattr(inverter, "_transport", None)
+            if transport is not None and getattr(transport, "is_connected", False):
+                try:
+                    await transport.disconnect()
+                    _LOGGER.debug("Disconnected transport for inverter %s", serial)
+                except Exception:
+                    _LOGGER.debug(
+                        "Error disconnecting inverter %s transport (ignored)",
+                        serial,
+                        exc_info=True,
+                    )
+
+        # Cached MID device transports (GridBOSS in LOCAL/HYBRID mode)
+        for serial, mid_device in self._mid_device_cache.items():
+            transport = getattr(mid_device, "_transport", None)
+            if transport is not None and getattr(transport, "is_connected", False):
+                try:
+                    await transport.disconnect()
+                    _LOGGER.debug("Disconnected transport for MID device %s", serial)
+                except Exception:
+                    _LOGGER.debug(
+                        "Error disconnecting MID %s transport (ignored)",
+                        serial,
+                        exc_info=True,
+                    )
 
     def _remove_task_from_set(self, task: asyncio.Task[Any]) -> None:
         """Remove completed task from background tasks set."""
