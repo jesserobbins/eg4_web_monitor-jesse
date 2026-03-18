@@ -13,6 +13,10 @@ from custom_components.eg4_web_monitor.number import (
     async_setup_entry,
     ACChargePowerNumber,
     ACChargeSOCLimitNumber,
+    ACCoupleEndSOCNumber,
+    ACCoupleEndVoltageNumber,
+    ACCoupleStartSOCNumber,
+    ACCoupleStartVoltageNumber,
     BatteryChargeCurrentNumber,
     BatteryDischargeCurrentNumber,
     OnGridSOCCutoffNumber,
@@ -88,7 +92,7 @@ class TestNumberPlatformSetup:
 
     @pytest.mark.asyncio
     async def test_async_setup_entry_with_inverter(self, hass):
-        """FlexBOSS inverter creates 9 number entities."""
+        """FlexBOSS inverter creates 13 number entities (9 base + 4 AC couple)."""
         coordinator = _mock_coordinator()
         entry = MagicMock()
         entry.runtime_data = coordinator
@@ -96,10 +100,14 @@ class TestNumberPlatformSetup:
         entities = []
         await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
 
-        assert len(entities) == 9
+        assert len(entities) == 13
         type_names = [type(e).__name__ for e in entities]
         assert "ACChargePowerNumber" in type_names
         assert "SystemChargeSOCLimitNumber" in type_names
+        assert "ACCoupleStartSOCNumber" in type_names
+        assert "ACCoupleEndSOCNumber" in type_names
+        assert "ACCoupleStartVoltageNumber" in type_names
+        assert "ACCoupleEndVoltageNumber" in type_names
 
     @pytest.mark.asyncio
     async def test_async_setup_entry_with_gridboss(self, hass):
@@ -455,3 +463,184 @@ class TestSystemChargeSOCWrite:
             HomeAssistantError, match="must be an integer between 10-101"
         ):
             await entity.async_set_native_value(5.0)
+
+
+# ── AC Couple Number Entities (registers 220-223) ────────────────────
+
+
+class TestACCoupleStartSOC:
+    """Test AC Couple Start SOC number entity (register 220)."""
+
+    @pytest.mark.asyncio
+    async def test_read_from_params(self):
+        """Reads value from HOLD_AC_COUPLE_START_SOC parameter."""
+        coordinator = _mock_coordinator(
+            parameters={"HOLD_AC_COUPLE_START_SOC": 20}
+        )
+        entity = ACCoupleStartSOCNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        assert entity.native_value == 20
+
+    @pytest.mark.asyncio
+    async def test_read_returns_none_when_missing(self):
+        """Returns None when parameter is not in coordinator data."""
+        coordinator = _mock_coordinator(parameters={})
+        entity = ACCoupleStartSOCNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        assert entity.native_value is None
+
+    @pytest.mark.asyncio
+    async def test_write_calls_raw_register(self):
+        """Write uses coordinator.write_raw_register(220, value)."""
+        coordinator = _mock_coordinator(has_local=True)
+        coordinator.write_raw_register = AsyncMock()
+        entity = ACCoupleStartSOCNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        await entity.async_set_native_value(25.0)
+
+        coordinator.write_raw_register.assert_called_once_with(
+            220, 25, serial="1234567890"
+        )
+
+    @pytest.mark.asyncio
+    async def test_write_out_of_range_raises(self):
+        """Out of range value raises HomeAssistantError."""
+        coordinator = _mock_coordinator(has_local=True)
+        coordinator.write_raw_register = AsyncMock()
+        entity = ACCoupleStartSOCNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        with pytest.raises(HomeAssistantError, match="must be between 0-100"):
+            await entity.async_set_native_value(150.0)
+
+    @pytest.mark.asyncio
+    async def test_write_no_local_raises(self):
+        """No local transport raises HomeAssistantError."""
+        coordinator = _mock_coordinator(has_local=False)
+        entity = ACCoupleStartSOCNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        with pytest.raises(HomeAssistantError, match="require local transport"):
+            await entity.async_set_native_value(25.0)
+
+    def test_attributes(self):
+        """Entity has correct attributes."""
+        coordinator = _mock_coordinator()
+        entity = ACCoupleStartSOCNumber(coordinator, "1234567890")
+
+        assert entity._attr_native_min_value == 0
+        assert entity._attr_native_max_value == 100
+        assert entity._attr_native_step == 1
+        assert entity._attr_native_unit_of_measurement == "%"
+
+
+class TestACCoupleEndSOC:
+    """Test AC Couple End SOC number entity (register 221)."""
+
+    @pytest.mark.asyncio
+    async def test_read_from_params(self):
+        """Reads value from HOLD_AC_COUPLE_END_SOC parameter."""
+        coordinator = _mock_coordinator(
+            parameters={"HOLD_AC_COUPLE_END_SOC": 95}
+        )
+        entity = ACCoupleEndSOCNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        assert entity.native_value == 95
+
+    @pytest.mark.asyncio
+    async def test_write_calls_raw_register(self):
+        """Write uses coordinator.write_raw_register(221, value)."""
+        coordinator = _mock_coordinator(has_local=True)
+        coordinator.write_raw_register = AsyncMock()
+        entity = ACCoupleEndSOCNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        await entity.async_set_native_value(90.0)
+
+        coordinator.write_raw_register.assert_called_once_with(
+            221, 90, serial="1234567890"
+        )
+
+
+class TestACCoupleStartVoltage:
+    """Test AC Couple Start Voltage number entity (register 222)."""
+
+    @pytest.mark.asyncio
+    async def test_read_applies_0_1v_scaling(self):
+        """Register value in 0.1V units is displayed as volts."""
+        coordinator = _mock_coordinator(
+            parameters={"HOLD_AC_COUPLE_START_VOLT": 480}
+        )
+        entity = ACCoupleStartVoltageNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        assert entity.native_value == 48.0
+
+    @pytest.mark.asyncio
+    async def test_write_converts_volts_to_register(self):
+        """Write converts 52.0V to register value 520."""
+        coordinator = _mock_coordinator(has_local=True)
+        coordinator.write_raw_register = AsyncMock()
+        entity = ACCoupleStartVoltageNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        await entity.async_set_native_value(52.0)
+
+        coordinator.write_raw_register.assert_called_once_with(
+            222, 520, serial="1234567890"
+        )
+
+    @pytest.mark.asyncio
+    async def test_write_out_of_range_raises(self):
+        """Voltage outside 40-60V range raises."""
+        coordinator = _mock_coordinator(has_local=True)
+        coordinator.write_raw_register = AsyncMock()
+        entity = ACCoupleStartVoltageNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        with pytest.raises(HomeAssistantError, match="must be between 40.0-60.0V"):
+            await entity.async_set_native_value(65.0)
+
+    def test_attributes(self):
+        """Entity has correct voltage attributes."""
+        coordinator = _mock_coordinator()
+        entity = ACCoupleStartVoltageNumber(coordinator, "1234567890")
+
+        assert entity._attr_native_min_value == 40.0
+        assert entity._attr_native_max_value == 60.0
+        assert entity._attr_native_step == 0.1
+        assert entity._attr_native_unit_of_measurement == "V"
+        assert entity._attr_native_precision == 1
+
+
+class TestACCoupleEndVoltage:
+    """Test AC Couple End Voltage number entity (register 223)."""
+
+    @pytest.mark.asyncio
+    async def test_read_applies_0_1v_scaling(self):
+        """Register value in 0.1V units is displayed as volts."""
+        coordinator = _mock_coordinator(
+            parameters={"HOLD_AC_COUPLE_END_VOLT": 570}
+        )
+        entity = ACCoupleEndVoltageNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        assert entity.native_value == 57.0
+
+    @pytest.mark.asyncio
+    async def test_write_converts_volts_to_register(self):
+        """Write converts 58.0V to register value 580."""
+        coordinator = _mock_coordinator(has_local=True)
+        coordinator.write_raw_register = AsyncMock()
+        entity = ACCoupleEndVoltageNumber(coordinator, "1234567890")
+        _prep(entity)
+
+        await entity.async_set_native_value(58.0)
+
+        coordinator.write_raw_register.assert_called_once_with(
+            223, 580, serial="1234567890"
+        )
