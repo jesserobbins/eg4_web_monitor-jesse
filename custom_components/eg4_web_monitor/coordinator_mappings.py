@@ -489,6 +489,15 @@ def _build_runtime_sensor_mapping(runtime_data: Any) -> dict[str, Any]:
         # battery_bank_charge_rate.
         "max_charge_current": runtime_data.bms_charge_current_limit,
         "max_discharge_current": runtime_data.bms_discharge_current_limit,
+        # AC coupling power (local-only, computed by _read_ac_couple_power in
+        # coordinator_local.py from registers 179/233). Not available in HTTP
+        # mode. Always include keys so entities are created during static phase.
+        "ac_couple_power": None,
+        "ac_couple_power_s": None,
+        "ac_couple_power_t": None,
+        # AC input type (local-only, read by _read_ac_input_type from register 77
+        # bit 0). Not available in HTTP mode.
+        "ac_input_type": None,
     }
 
 
