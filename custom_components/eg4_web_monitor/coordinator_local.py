@@ -74,24 +74,31 @@ def _unsigned_to_signed16(val: int) -> int:
     return val - 65536 if val >= 32768 else val
 
 
-async def _read_ac_couple_power(
+async def _read_ac_couple_registers(
     transport: Any, sensors: dict[str, Any]
 ) -> None:
-    """Read AC couple power from input registers 153, 206, 207.
+    """Read AC couple power and energy from input registers.
 
-    Register 153 (ACCouplePower): total AC-coupled inverter power, raw = watts.
-    Registers 206-207 (I_AC_COUPLE_POWER_L1 / L2): per-leg split-phase values,
-    signed 16-bit, raw = watts. None of these are in pylxpweb's standard input
-    register groups so we read them directly via FC 04.
+    Power:
+      Register 153 (ACCouplePower): total AC-coupled inverter power, raw = watts.
+      Registers 206-207 (L1/L2): per-leg split-phase power, signed 16-bit, watts.
+
+    Energy:
+      Register 124: generator/AC-couple energy today (÷10 = kWh).
+      Registers 125-126: generator/AC-couple energy total (32-bit, ÷10 = kWh).
+
+    None of these are in pylxpweb's standard energy read groups so we read
+    them directly via FC 04.
     """
     read_fn = getattr(transport, "_read_input_registers", None)
     if read_fn is None:
         _LOGGER.warning(
-            "AC couple power: transport %s has no _read_input_registers method",
+            "AC couple registers: transport %s has no _read_input_registers method",
             type(transport).__name__,
         )
         return
 
+    # --- Power: reg 153 (total) ---
     try:
         regs_total = await read_fn(153, 1)
         if regs_total and len(regs_total) >= 1:
@@ -104,6 +111,7 @@ async def _read_ac_couple_power(
     except Exception as err:
         _LOGGER.warning("AC couple power register 153 read failed: %s", err)
 
+    # --- Power: regs 206-207 (per-leg L1/L2) ---
     try:
         regs = await read_fn(206, 2)
         if regs and len(regs) >= 2:
@@ -118,6 +126,27 @@ async def _read_ac_couple_power(
             )
     except Exception as err:
         _LOGGER.warning("AC couple power registers 206-207 read failed: %s", err)
+
+    # --- Energy: regs 124 (today) and 125-126 (total, 32-bit) ---
+    try:
+        regs_energy = await read_fn(124, 3)
+        if regs_energy and len(regs_energy) >= 3:
+            energy_today = regs_energy[0] / 10.0
+            energy_total = (regs_energy[1] | (regs_energy[2] << 16)) / 10.0
+            sensors["ac_couple_energy_today"] = energy_today
+            sensors["ac_couple_energy_total"] = energy_total
+            _LOGGER.debug(
+                "AC couple energy: today=%.1fkWh total=%.1fkWh",
+                energy_today,
+                energy_total,
+            )
+        else:
+            _LOGGER.warning(
+                "AC couple energy: unexpected response from regs 124-126: %s",
+                regs_energy,
+            )
+    except Exception as err:
+        _LOGGER.warning("AC couple energy registers 124-126 read failed: %s", err)
 
 
 async def _read_ac_input_type(
@@ -416,7 +445,7 @@ class LocalTransportMixin(_MixinBase):
         # AC couple registers — direct register reads
         static_transport = getattr(inverter, "_transport", None)
         if static_transport:
-            await _read_ac_couple_power(static_transport, device_data["sensors"])
+            await _read_ac_couple_registers(static_transport, device_data["sensors"])
             await _read_ac_input_type(static_transport, device_data["sensors"])
 
         transport = getattr(inverter, "_transport", None)
@@ -1084,7 +1113,7 @@ class LocalTransportMixin(_MixinBase):
                 # AC couple registers — direct register reads
                 transport_obj = getattr(inverter, "_transport", None)
                 if transport_obj:
-                    await _read_ac_couple_power(transport_obj, sensors)
+                    await _read_ac_couple_registers(transport_obj, sensors)
                     await _read_ac_input_type(transport_obj, sensors)
 
                 # Add last_polled timestamp so users can see when data was last fetched

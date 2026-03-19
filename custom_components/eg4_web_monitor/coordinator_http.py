@@ -35,7 +35,7 @@ from .const import (
     CONNECTION_TYPE_HYBRID,
     DOMAIN,
 )
-from .coordinator_local import _read_ac_couple_power, _read_ac_input_type
+from .coordinator_local import _read_ac_couple_registers, _read_ac_input_type
 from .coordinator_mappings import (
     _build_individual_battery_mapping,
     _get_transport_label,
@@ -238,7 +238,7 @@ class HTTPUpdateMixin(_MixinBase):
                     device_data["sensors"]["transport_host"] = transport.host
                 # Read AC couple registers from local transport in hybrid mode
                 if device_data.get("type") == "inverter":
-                    await _read_ac_couple_power(transport, device_data["sensors"])
+                    await _read_ac_couple_registers(transport, device_data["sensors"])
                     await _read_ac_input_type(transport, device_data["sensors"])
             else:
                 device_data["sensors"]["connection_transport"] = "Cloud"

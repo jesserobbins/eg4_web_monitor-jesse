@@ -303,45 +303,48 @@ class TestBuildLocalDeviceData:
         assert result["sensors"]["grid_import_power"] == 500
 
 
-# ── _read_ac_couple_power / _read_ac_input_type ──────────────────────
+# ── _read_ac_couple_registers / _read_ac_input_type ──────────────────────
 
 
 class TestReadACCouplePower:
     """Test direct register reads for AC couple power (registers 153, 206-207)."""
 
     async def test_reads_power_from_registers(self):
-        """Reads total from reg 153 and per-leg L1/L2 from regs 206-207."""
+        """Reads total from reg 153, per-leg from 206-207, energy from 124-126."""
         from custom_components.eg4_web_monitor.coordinator_local import (
-            _read_ac_couple_power,
+            _read_ac_couple_registers,
         )
 
         transport = MagicMock()
-        # Call 1: reg 153 (total), Call 2: regs 206-207 (per-leg)
+        # Call 1: reg 153 (total), Call 2: regs 206-207 (per-leg),
+        # Call 3: regs 124-126 (energy today + total 32-bit)
         transport._read_input_registers = AsyncMock(
-            side_effect=[[2700], [1500, 1200]]
+            side_effect=[[2700], [1500, 1200], [35, 1000, 0]]
         )
         sensors: dict = {}
 
-        await _read_ac_couple_power(transport, sensors)
+        await _read_ac_couple_registers(transport, sensors)
 
         assert sensors["ac_couple_power"] == 2700
         assert sensors["ac_couple_power_l1"] == 1500
         assert sensors["ac_couple_power_l2"] == 1200
+        assert sensors["ac_couple_energy_today"] == 3.5
+        assert sensors["ac_couple_energy_total"] == 100.0
 
     async def test_handles_signed_values(self):
         """Negative (signed) register values are converted correctly."""
         from custom_components.eg4_web_monitor.coordinator_local import (
-            _read_ac_couple_power,
+            _read_ac_couple_registers,
         )
 
         transport = MagicMock()
         # 65036 = -500 as signed int16 (65536 - 500)
         transport._read_input_registers = AsyncMock(
-            side_effect=[[65036], [65036, 0]]
+            side_effect=[[65036], [65036, 0], [0, 0, 0]]
         )
         sensors: dict = {}
 
-        await _read_ac_couple_power(transport, sensors)
+        await _read_ac_couple_registers(transport, sensors)
 
         assert sensors["ac_couple_power"] == -500
         assert sensors["ac_couple_power_l1"] == -500
@@ -350,20 +353,20 @@ class TestReadACCouplePower:
     async def test_skips_when_no_read_fn(self):
         """Gracefully skips when transport lacks _read_input_registers."""
         from custom_components.eg4_web_monitor.coordinator_local import (
-            _read_ac_couple_power,
+            _read_ac_couple_registers,
         )
 
         transport = MagicMock(spec=[])  # No _read_input_registers attr
         sensors: dict = {}
 
-        await _read_ac_couple_power(transport, sensors)
+        await _read_ac_couple_registers(transport, sensors)
 
         assert "ac_couple_power" not in sensors
 
     async def test_handles_read_failure(self):
         """Transport read failure is logged but doesn't raise."""
         from custom_components.eg4_web_monitor.coordinator_local import (
-            _read_ac_couple_power,
+            _read_ac_couple_registers,
         )
 
         transport = MagicMock()
@@ -372,7 +375,7 @@ class TestReadACCouplePower:
         )
         sensors: dict = {}
 
-        await _read_ac_couple_power(transport, sensors)
+        await _read_ac_couple_registers(transport, sensors)
 
         assert "ac_couple_power" not in sensors
 
