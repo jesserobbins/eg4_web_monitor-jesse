@@ -592,6 +592,9 @@ class DeviceProcessingMixin(_MixinBase):
             # Derive AC couple energy from cloud consumption minus energy balance.
             # The cloud's todayUsage/totalUsage includes AC couple; energy balance
             # does not.  The difference is the AC couple energy contribution.
+            # Always seed keys so the sensor platform discovers them on first refresh.
+            sensors.setdefault("ac_couple_energy_today", None)
+            sensors.setdefault("ac_couple_energy_total", None)
             cloud_energy = getattr(inverter, "_energy", None)
             _LOGGER.debug(
                 "AC couple energy derivation: _energy=%s, eb_today=%s, eb_lifetime=%s",
