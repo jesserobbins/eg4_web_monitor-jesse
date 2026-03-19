@@ -1036,6 +1036,15 @@ class DeviceProcessingMixin(_MixinBase):
                 # Fallback to features object attribute using correct mapping
                 features[prop] = getattr(inverter_features, attr_name, False)
 
+        # Device-family-specific flags not in pylxpweb's InverterFeatures.
+        # EG4_OFFGRID (12000XP, 6000XP): no per-leg AC couple regs, no board
+        # temp regs, but supports derived AC couple energy from cloud balance.
+        family = features.get("inverter_family")
+        if family == "EG4_OFFGRID":
+            features["supports_ac_couple_per_leg"] = False
+            features["supports_inverter_board_temps"] = False
+            features["supports_ac_couple_energy_derived"] = True
+
         return features
 
     def _extract_battery_from_object(self, battery: "Battery") -> dict[str, Any]:

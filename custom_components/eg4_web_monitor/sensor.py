@@ -51,7 +51,8 @@ def _should_create_sensor(sensor_key: str, features: dict[str, Any] | None) -> b
     Returns:
         True if the sensor should be created, False if it should be skipped
     """
-    # If no features detected, create all sensors (conservative fallback)
+    # If no features detected (None or empty dict), create all sensors
+    # (conservative fallback — entity cleanup happens via late registration)
     if not features:
         return True
 
