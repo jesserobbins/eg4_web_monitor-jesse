@@ -615,9 +615,6 @@
       "ac_couple_energy_total": {
         "name": "AC Couple Energy (Lifetime)"
       },
-      "gen_port_energy": {
-        "name": "Gen/AC Couple Port Energy"
-      },
       "ac_input_type": {
         "name": "AC Input Type"
       },

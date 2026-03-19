@@ -139,13 +139,6 @@ SENSOR_TYPES = {
         "state_class": "total_increasing",
         "icon": "mdi:solar-power-variant",
     },
-    "gen_port_energy": {
-        "name": "Gen/AC Couple Port Energy",
-        "unit": UnitOfEnergy.KILO_WATT_HOUR,
-        "device_class": "energy",
-        "state_class": "total_increasing",
-        "icon": "mdi:transmission-tower-import",
-    },
     "ac_input_type": {
         "name": "AC Input Type",
         "icon": "mdi:power-plug",
