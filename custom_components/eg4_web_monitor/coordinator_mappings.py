@@ -1067,6 +1067,8 @@ def _features_from_family(
     features: dict[str, Any] = {}
 
     # EG4_OFFGRID (12000XP, 6000XP): US split-phase, discharge recovery
+    # No per-leg AC couple (regs 206-207 invalid), no internal/BT temp regs
+    # AC couple energy derived from cloud consumption minus energy balance
     if mapped == "EG4_OFFGRID":
         features = {
             "inverter_family": mapped,
@@ -1074,6 +1076,9 @@ def _features_from_family(
             "supports_three_phase": False,
             "supports_discharge_recovery_hysteresis": True,
             "supports_volt_watt_curve": False,
+            "supports_ac_couple_per_leg": False,
+            "supports_inverter_board_temps": False,
+            "supports_ac_couple_energy_derived": True,
         }
 
     # EG4_HYBRID (18kPV, 12kPV, FlexBOSS): US split-phase, volt-watt
