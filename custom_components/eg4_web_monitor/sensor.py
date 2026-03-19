@@ -382,6 +382,13 @@ def _create_inverter_sensors(
     skipped_sensors: list[str] = []
 
     # Create main inverter sensors (excluding battery_bank sensors)
+    ac_keys_present = [k for k in device_data.get("sensors", {}) if "ac_couple_energy" in k]
+    _LOGGER.debug(
+        "Inverter %s sensor creation: ac_couple_energy keys in data=%s, features=%s",
+        serial,
+        ac_keys_present,
+        {k: v for k, v in (features or {}).items() if "ac_couple" in k} if features else None,
+    )
     for sensor_key in device_data.get("sensors", {}):
         if sensor_key in SENSOR_TYPES:
             # Skip battery_bank sensors - they'll be created separately
