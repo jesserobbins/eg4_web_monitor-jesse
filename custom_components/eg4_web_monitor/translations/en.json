@@ -609,6 +609,12 @@
       "ac_couple_power_l2": {
         "name": "AC Couple Power L2"
       },
+      "ac_couple_energy_today": {
+        "name": "AC Couple Energy Today"
+      },
+      "ac_couple_energy_total": {
+        "name": "AC Couple Energy (Lifetime)"
+      },
       "ac_input_type": {
         "name": "AC Input Type"
       },

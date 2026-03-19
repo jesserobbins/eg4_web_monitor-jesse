@@ -221,6 +221,9 @@ INVERTER_ENERGY_KEYS: frozenset[str] = frozenset(
         "eps_energy_today_l2",
         "eps_energy_total_l1",
         "eps_energy_total_l2",
+        # AC couple energy (regs 124-125, generator port doubles as AC couple)
+        "ac_couple_energy_today",
+        "ac_couple_energy_total",
     }
 )
 
@@ -682,6 +685,9 @@ def _build_energy_sensor_mapping(energy_data: Any) -> dict[str, Any]:
         "eps_energy_today_l2": energy_data.eps_l2_energy_today,
         "eps_energy_total_l1": energy_data.eps_l1_energy_total,
         "eps_energy_total_l2": energy_data.eps_l2_energy_total,
+        # AC couple energy (regs 124-125; generator port doubles as AC couple port)
+        "ac_couple_energy_today": energy_data.generator_energy_today,
+        "ac_couple_energy_total": energy_data.generator_energy_total,
     }
 
 

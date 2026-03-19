@@ -125,6 +125,20 @@ SENSOR_TYPES = {
         "state_class": "measurement",
         "icon": "mdi:solar-power-variant",
     },
+    "ac_couple_energy_today": {
+        "name": "AC Couple Energy Today",
+        "unit": UnitOfEnergy.KILO_WATT_HOUR,
+        "device_class": "energy",
+        "state_class": "total_increasing",
+        "icon": "mdi:solar-power-variant",
+    },
+    "ac_couple_energy_total": {
+        "name": "AC Couple Energy (Lifetime)",
+        "unit": UnitOfEnergy.KILO_WATT_HOUR,
+        "device_class": "energy",
+        "state_class": "total_increasing",
+        "icon": "mdi:solar-power-variant",
+    },
     "ac_input_type": {
         "name": "AC Input Type",
         "icon": "mdi:power-plug",
