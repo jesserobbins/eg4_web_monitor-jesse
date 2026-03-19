@@ -156,3 +156,7 @@ docker-compose.override.yml.trash/
 
 # Local scratchpad and one-off scripts (not part of the integration)
 scratchpad/
+
+# Modbus sweep data (contains credentials and device-specific data)
+modbus_sweep/
+*.csv
