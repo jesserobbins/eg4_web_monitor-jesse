@@ -77,11 +77,12 @@ def _unsigned_to_signed16(val: int) -> int:
 async def _read_ac_couple_power(
     transport: Any, sensors: dict[str, Any]
 ) -> None:
-    """Read AC couple power from input registers 206-207 (signed, raw = watts).
+    """Read AC couple power from input registers 153, 206, 207.
 
-    Registers 206-207 (I_AC_COUPLE_POWER_S / I_AC_COUPLE_POWER_T) are not
-    in pylxpweb's standard input register groups, so we read them directly
-    via FC 04. Each register is a signed 16-bit value in watts.
+    Register 153 (ACCouplePower): total AC-coupled inverter power, raw = watts.
+    Registers 206-207 (I_AC_COUPLE_POWER_L1 / L2): per-leg split-phase values,
+    signed 16-bit, raw = watts. None of these are in pylxpweb's standard input
+    register groups so we read them directly via FC 04.
     """
     read_fn = getattr(transport, "_read_input_registers", None)
     if read_fn is None:
@@ -92,19 +93,25 @@ async def _read_ac_couple_power(
         return
 
     try:
+        regs_total = await read_fn(153, 1)
+        if regs_total and len(regs_total) >= 1:
+            sensors["ac_couple_power"] = _unsigned_to_signed16(regs_total[0])
+            _LOGGER.debug("AC couple power total: reg153=%dW", sensors["ac_couple_power"])
+        else:
+            _LOGGER.warning(
+                "AC couple power: unexpected response from reg 153: %s", regs_total
+            )
+    except Exception as err:
+        _LOGGER.warning("AC couple power register 153 read failed: %s", err)
+
+    try:
         regs = await read_fn(206, 2)
         if regs and len(regs) >= 2:
-            power_s = _unsigned_to_signed16(regs[0])
-            power_t = _unsigned_to_signed16(regs[1])
-            sensors["ac_couple_power_s"] = power_s
-            sensors["ac_couple_power_t"] = power_t
-            sensors["ac_couple_power"] = power_s + power_t
-            _LOGGER.debug(
-                "AC couple power: S=%dW T=%dW total=%dW",
-                power_s,
-                power_t,
-                power_s + power_t,
-            )
+            power_l1 = _unsigned_to_signed16(regs[0])
+            power_l2 = _unsigned_to_signed16(regs[1])
+            sensors["ac_couple_power_l1"] = power_l1
+            sensors["ac_couple_power_l2"] = power_l2
+            _LOGGER.debug("AC couple power per-leg: L1=%dW L2=%dW", power_l1, power_l2)
         else:
             _LOGGER.warning(
                 "AC couple power: unexpected response from regs 206-207: %s", regs

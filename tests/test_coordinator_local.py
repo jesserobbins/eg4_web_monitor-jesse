@@ -307,23 +307,26 @@ class TestBuildLocalDeviceData:
 
 
 class TestReadACCouplePower:
-    """Test direct register reads for AC couple power (registers 206-207)."""
+    """Test direct register reads for AC couple power (registers 153, 206-207)."""
 
     async def test_reads_power_from_registers(self):
-        """Reads signed AC couple power from input registers 206-207."""
+        """Reads total from reg 153 and per-leg L1/L2 from regs 206-207."""
         from custom_components.eg4_web_monitor.coordinator_local import (
             _read_ac_couple_power,
         )
 
         transport = MagicMock()
-        transport._read_input_registers = AsyncMock(return_value=[1500, 1200])
+        # Call 1: reg 153 (total), Call 2: regs 206-207 (per-leg)
+        transport._read_input_registers = AsyncMock(
+            side_effect=[[2700], [1500, 1200]]
+        )
         sensors: dict = {}
 
         await _read_ac_couple_power(transport, sensors)
 
-        assert sensors["ac_couple_power_s"] == 1500
-        assert sensors["ac_couple_power_t"] == 1200
         assert sensors["ac_couple_power"] == 2700
+        assert sensors["ac_couple_power_l1"] == 1500
+        assert sensors["ac_couple_power_l2"] == 1200
 
     async def test_handles_signed_values(self):
         """Negative (signed) register values are converted correctly."""
@@ -333,14 +336,16 @@ class TestReadACCouplePower:
 
         transport = MagicMock()
         # 65036 = -500 as signed int16 (65536 - 500)
-        transport._read_input_registers = AsyncMock(return_value=[65036, 0])
+        transport._read_input_registers = AsyncMock(
+            side_effect=[[65036], [65036, 0]]
+        )
         sensors: dict = {}
 
         await _read_ac_couple_power(transport, sensors)
 
-        assert sensors["ac_couple_power_s"] == -500
-        assert sensors["ac_couple_power_t"] == 0
         assert sensors["ac_couple_power"] == -500
+        assert sensors["ac_couple_power_l1"] == -500
+        assert sensors["ac_couple_power_l2"] == 0
 
     async def test_skips_when_no_read_fn(self):
         """Gracefully skips when transport lacks _read_input_registers."""

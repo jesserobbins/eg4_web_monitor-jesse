@@ -603,11 +603,11 @@
       "ac_couple_power": {
         "name": "AC Couple Power"
       },
-      "ac_couple_power_s": {
-        "name": "AC Couple Power S-Phase"
+      "ac_couple_power_l1": {
+        "name": "AC Couple Power L1"
       },
-      "ac_couple_power_t": {
-        "name": "AC Couple Power T-Phase"
+      "ac_couple_power_l2": {
+        "name": "AC Couple Power L2"
       },
       "ac_input_type": {
         "name": "AC Input Type"

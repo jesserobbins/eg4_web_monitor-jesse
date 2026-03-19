@@ -111,15 +111,15 @@ SENSOR_TYPES = {
         "state_class": "measurement",
         "icon": "mdi:solar-power-variant",
     },
-    "ac_couple_power_s": {
-        "name": "AC Couple Power S-Phase",
+    "ac_couple_power_l1": {
+        "name": "AC Couple Power L1",
         "unit": UnitOfPower.WATT,
         "device_class": "power",
         "state_class": "measurement",
         "icon": "mdi:solar-power-variant",
     },
-    "ac_couple_power_t": {
-        "name": "AC Couple Power T-Phase",
+    "ac_couple_power_l2": {
+        "name": "AC Couple Power L2",
         "unit": UnitOfPower.WATT,
         "device_class": "power",
         "state_class": "measurement",

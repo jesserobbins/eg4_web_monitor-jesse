@@ -180,8 +180,8 @@ INVERTER_RUNTIME_KEYS: frozenset[str] = frozenset(
         "max_charge_current",
         "max_discharge_current",
         "ac_couple_power",
-        "ac_couple_power_s",
-        "ac_couple_power_t",
+        "ac_couple_power_l1",
+        "ac_couple_power_l2",
         "ac_input_type",
         # EPS per-leg (split-phase, regs 129-132)
         "eps_power_l1",
@@ -582,11 +582,11 @@ def _build_runtime_sensor_mapping(runtime_data: Any) -> dict[str, Any]:
         "max_charge_current": runtime_data.bms_charge_current_limit,
         "max_discharge_current": runtime_data.bms_discharge_current_limit,
         # AC coupling power. Seeded from generator_power (reg 123) as a fallback;
-        # coordinator_local.py overrides this with a direct read of register 153
-        # (I_AC_COUPLE_POWER, 0.1W scale) when available.
+        # coordinator_local.py overrides this with register 153 (total, raw W)
+        # and registers 206-207 (per-leg L1/L2, raw W) when available.
         "ac_couple_power": runtime_data.generator_power,
-        "ac_couple_power_s": None,
-        "ac_couple_power_t": None,
+        "ac_couple_power_l1": None,
+        "ac_couple_power_l2": None,
         # AC input type (register 77, bit 0) is read as part of the standard
         # temperatures group (64-79). Convert int to string label here; the
         # direct _read_ac_input_type call in coordinator_local.py may override.
