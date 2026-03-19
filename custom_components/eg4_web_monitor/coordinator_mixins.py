@@ -593,6 +593,12 @@ class DeviceProcessingMixin(_MixinBase):
             # The cloud's todayUsage/totalUsage includes AC couple; energy balance
             # does not.  The difference is the AC couple energy contribution.
             cloud_energy = getattr(inverter, "_energy", None)
+            _LOGGER.debug(
+                "AC couple energy derivation: _energy=%s, eb_today=%s, eb_lifetime=%s",
+                cloud_energy is not None,
+                eb_today,
+                eb_lifetime,
+            )
             if cloud_energy is not None:
                 from pylxpweb.constants import scale_energy_value
 
@@ -601,6 +607,11 @@ class DeviceProcessingMixin(_MixinBase):
                 )
                 cloud_lifetime = scale_energy_value(
                     "totalUsage", cloud_energy.totalUsage, to_kwh=True
+                )
+                _LOGGER.debug(
+                    "AC couple energy: cloud_today=%s, cloud_lifetime=%s",
+                    cloud_today,
+                    cloud_lifetime,
                 )
                 if (
                     cloud_today is not None
