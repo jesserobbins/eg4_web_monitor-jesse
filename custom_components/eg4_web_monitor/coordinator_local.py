@@ -127,26 +127,10 @@ async def _read_ac_couple_registers(
     except Exception as err:
         _LOGGER.warning("AC couple power registers 206-207 read failed: %s", err)
 
-    # --- Energy: regs 124 (today) and 125-126 (total, 32-bit) ---
-    try:
-        regs_energy = await read_fn(124, 3)
-        if regs_energy and len(regs_energy) >= 3:
-            energy_today = regs_energy[0] / 10.0
-            energy_total = (regs_energy[1] | (regs_energy[2] << 16)) / 10.0
-            sensors["ac_couple_energy_today"] = energy_today
-            sensors["ac_couple_energy_total"] = energy_total
-            _LOGGER.debug(
-                "AC couple energy: today=%.1fkWh total=%.1fkWh",
-                energy_today,
-                energy_total,
-            )
-        else:
-            _LOGGER.warning(
-                "AC couple energy: unexpected response from regs 124-126: %s",
-                regs_energy,
-            )
-    except Exception as err:
-        _LOGGER.warning("AC couple energy registers 124-126 read failed: %s", err)
+    # NOTE: Registers 124-126 are generator energy (Egen_day, Egen_all L/H),
+    # NOT AC couple energy. There are no dedicated AC couple energy registers
+    # in the Modbus spec. Use HA's Riemann sum integration helper to derive
+    # energy from the ac_couple_power sensor (register 153) instead.
 
 
 async def _read_ac_input_type(

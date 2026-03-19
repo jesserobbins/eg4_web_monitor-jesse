@@ -574,20 +574,51 @@ class DeviceProcessingMixin(_MixinBase):
         # balance.  See pylxpweb _mid_runtime_properties.py for details.
         if getattr(inverter, "_transport", None) is not None:
             sensors = processed["sensors"]
-            sensors["consumption"] = _energy_balance(
+            eb_today = _energy_balance(
                 sensors.get("yield"),
                 sensors.get("discharging"),
                 sensors.get("grid_import"),
                 sensors.get("charging"),
                 sensors.get("grid_export"),
             )
-            sensors["consumption_lifetime"] = _energy_balance(
+            eb_lifetime = _energy_balance(
                 sensors.get("yield_lifetime"),
                 sensors.get("discharging_lifetime"),
                 sensors.get("grid_import_lifetime"),
                 sensors.get("charging_lifetime"),
                 sensors.get("grid_export_lifetime"),
             )
+
+            # Derive AC couple energy from cloud consumption minus energy balance.
+            # The cloud's todayUsage/totalUsage includes AC couple; energy balance
+            # does not.  The difference is the AC couple energy contribution.
+            cloud_energy = getattr(inverter, "_energy", None)
+            if cloud_energy is not None:
+                from pylxpweb.constants import scale_energy_value
+
+                cloud_today = scale_energy_value(
+                    "todayUsage", cloud_energy.todayUsage, to_kwh=True
+                )
+                cloud_lifetime = scale_energy_value(
+                    "totalUsage", cloud_energy.totalUsage, to_kwh=True
+                )
+                if (
+                    cloud_today is not None
+                    and eb_today is not None
+                ):
+                    sensors["ac_couple_energy_today"] = max(
+                        0.0, cloud_today - eb_today
+                    )
+                if (
+                    cloud_lifetime is not None
+                    and eb_lifetime is not None
+                ):
+                    sensors["ac_couple_energy_total"] = max(
+                        0.0, cloud_lifetime - eb_lifetime
+                    )
+
+            sensors["consumption"] = eb_today
+            sensors["consumption_lifetime"] = eb_lifetime
 
         # Overlay transport-exclusive sensors (Modbus-only, not in cloud API).
         # When a local transport is attached in hybrid mode, _transport_runtime
