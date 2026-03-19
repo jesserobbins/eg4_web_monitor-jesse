@@ -562,6 +562,11 @@ class DeviceProcessingMixin(_MixinBase):
         property_map = self._get_inverter_property_map()
         processed["sensors"] = _map_device_properties(inverter, property_map)
 
+        # Seed AC couple energy keys so sensor platform discovers them on first
+        # refresh, even before the transport is attached (hybrid override below).
+        processed["sensors"].setdefault("ac_couple_energy_today", None)
+        processed["sensors"].setdefault("ac_couple_energy_total", None)
+
         # Override consumption with energy balance when transport data is present.
         # pylxpweb's energy_today_usage/energy_lifetime_usage properties read from
         # load_energy registers (Erec = AC charge from grid) when transport data
