@@ -617,6 +617,17 @@ class DeviceProcessingMixin(_MixinBase):
                         0.0, cloud_lifetime - eb_lifetime
                     )
 
+            # Expose the cloud's genPower as cumulative gen+AC couple port energy.
+            # The cloud API's genPower field is a cumulative Wh counter for the
+            # shared generator/AC couple port — NOT instantaneous watts.  In hybrid
+            # mode the local transport overrides generator_power with Modbus reg 123,
+            # so we read the cloud value directly to preserve the energy counter.
+            cloud_runtime = getattr(inverter, "_runtime", None)
+            if cloud_runtime is not None:
+                gen_power_raw = getattr(cloud_runtime, "genPower", None)
+                if gen_power_raw is not None and int(gen_power_raw) > 0:
+                    sensors["gen_port_energy"] = int(gen_power_raw) / 1000.0
+
             sensors["consumption"] = eb_today
             sensors["consumption_lifetime"] = eb_lifetime
 
