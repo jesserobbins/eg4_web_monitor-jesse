@@ -282,6 +282,10 @@ INVERTER_COMPUTED_KEYS: frozenset[str] = frozenset(
         "grid_import_power",
         "grid_voltage",
         "eps_voltage",
+        # AC couple energy derived from cloud consumption - energy balance
+        # (set conditionally in coordinator_mixins hybrid override)
+        "ac_couple_energy_today",
+        "ac_couple_energy_total",
     }
 )
 
