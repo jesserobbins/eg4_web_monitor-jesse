@@ -74,9 +74,7 @@ def _unsigned_to_signed16(val: int) -> int:
     return val - 65536 if val >= 32768 else val
 
 
-async def _read_ac_couple_registers(
-    transport: Any, sensors: dict[str, Any]
-) -> None:
+async def _read_ac_couple_registers(transport: Any, sensors: dict[str, Any]) -> None:
     """Read AC couple power and energy from input registers.
 
     Power:
@@ -103,7 +101,9 @@ async def _read_ac_couple_registers(
         regs_total = await read_fn(153, 1)
         if regs_total and len(regs_total) >= 1:
             sensors["ac_couple_power"] = _unsigned_to_signed16(regs_total[0])
-            _LOGGER.debug("AC couple power total: reg153=%dW", sensors["ac_couple_power"])
+            _LOGGER.debug(
+                "AC couple power total: reg153=%dW", sensors["ac_couple_power"]
+            )
         else:
             _LOGGER.warning(
                 "AC couple power: unexpected response from reg 153: %s", regs_total
@@ -133,9 +133,7 @@ async def _read_ac_couple_registers(
     # energy from the ac_couple_power sensor (register 153) instead.
 
 
-async def _read_ac_input_type(
-    transport: Any, sensors: dict[str, Any]
-) -> None:
+async def _read_ac_input_type(transport: Any, sensors: dict[str, Any]) -> None:
     """Read AC input type from input register 77 (bit 0: 0=Grid, 1=Generator).
 
     Register 77 is in the temperature group (64-79) but pylxpweb removed the
@@ -339,7 +337,11 @@ class LocalTransportMixin(_MixinBase):
                             params[param_name] = raw_regs[addr]
                     _LOGGER.debug(
                         "AC couple params (raw read): %s",
-                        {k: v for k, v in params.items() if k.startswith("HOLD_AC_COUPLE")},
+                        {
+                            k: v
+                            for k, v in params.items()
+                            if k.startswith("HOLD_AC_COUPLE")
+                        },
                     )
                 except Exception as ac_err:
                     _LOGGER.debug(
@@ -431,6 +433,18 @@ class LocalTransportMixin(_MixinBase):
         if static_transport:
             await _read_ac_couple_registers(static_transport, device_data["sensors"])
             await _read_ac_input_type(static_transport, device_data["sensors"])
+            # The AC input port is single-purpose: either Generator OR AC
+            # Couple. Mute the inactive pair so consumers don't double-count.
+            ac_input = device_data["sensors"].get("ac_input_type")
+            if ac_input == "Generator":
+                for k in (
+                    "ac_couple_power",
+                    "ac_couple_power_l1",
+                    "ac_couple_power_l2",
+                ):
+                    device_data["sensors"][k] = None
+            elif ac_input == "Grid":
+                device_data["sensors"]["generator_power"] = None
 
         transport = getattr(inverter, "_transport", None)
         if transport and hasattr(transport, "host"):

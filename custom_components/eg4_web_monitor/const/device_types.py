@@ -164,8 +164,10 @@ DISCHARGE_RECOVERY_SENSORS: frozenset[str] = frozenset(
     }
 )
 
-# Sensors requiring per-leg AC couple registers (regs 206-207)
-# Only valid on GridBOSS/MID devices; standard inverters always read 0
+# Sensors requiring per-leg AC couple registers (regs 206-207).
+# Valid on GridBOSS/MID devices and on EG4_OFFGRID (12000XP, 6000XP) —
+# regs 206-207 return real per-leg AC couple power on both.  Filtered out
+# for families that return 0 on these registers (EG4_HYBRID, LXP).
 AC_COUPLE_PER_LEG_SENSORS: frozenset[str] = frozenset(
     {
         "ac_couple_power_l1",

@@ -585,10 +585,13 @@ def _build_runtime_sensor_mapping(runtime_data: Any) -> dict[str, Any]:
         # battery_bank_charge_rate.
         "max_charge_current": runtime_data.bms_charge_current_limit,
         "max_discharge_current": runtime_data.bms_discharge_current_limit,
-        # AC coupling power. Seeded from generator_power (reg 123) as a fallback;
-        # coordinator_local.py overrides this with register 153 (total, raw W)
-        # and registers 206-207 (per-leg L1/L2, raw W) when available.
-        "ac_couple_power": runtime_data.generator_power,
+        # AC couple power is read directly from register 153 (total) and
+        # registers 206-207 (per-leg L1/L2) by _read_ac_couple_registers()
+        # in coordinator_local.py. Reg 123 (generator_power) is NOT a valid
+        # fallback — when the AC input port is configured as Generator
+        # (reg 77 bit 0 == 1), reg 123 reflects generator power, not AC
+        # couple. Seed None so the keys exist for entity creation.
+        "ac_couple_power": None,
         "ac_couple_power_l1": None,
         "ac_couple_power_l2": None,
         # AC input type (register 77, bit 0) is read as part of the standard
@@ -1071,8 +1074,9 @@ def _features_from_family(
     features: dict[str, Any] = {}
 
     # EG4_OFFGRID (12000XP, 6000XP): US split-phase, discharge recovery
-    # No per-leg AC couple (regs 206-207 invalid), no internal/BT temp regs
-    # AC couple energy derived from cloud consumption minus energy balance
+    # Per-leg AC couple regs 206-207 DO return data (read via
+    # _read_ac_couple_registers). No internal/BT temp regs (64, 108).
+    # AC couple energy derived from cloud consumption minus energy balance.
     if mapped == "EG4_OFFGRID":
         features = {
             "inverter_family": mapped,
@@ -1080,7 +1084,7 @@ def _features_from_family(
             "supports_three_phase": False,
             "supports_discharge_recovery_hysteresis": True,
             "supports_volt_watt_curve": False,
-            "supports_ac_couple_per_leg": False,
+            "supports_ac_couple_per_leg": True,
             "supports_inverter_board_temps": False,
             "supports_ac_couple_energy_derived": True,
         }

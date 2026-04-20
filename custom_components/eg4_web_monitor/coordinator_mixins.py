@@ -621,17 +621,9 @@ class DeviceProcessingMixin(_MixinBase):
                     cloud_today,
                     cloud_lifetime,
                 )
-                if (
-                    cloud_today is not None
-                    and eb_today is not None
-                ):
-                    sensors["ac_couple_energy_today"] = max(
-                        0.0, cloud_today - eb_today
-                    )
-                if (
-                    cloud_lifetime is not None
-                    and eb_lifetime is not None
-                ):
+                if cloud_today is not None and eb_today is not None:
+                    sensors["ac_couple_energy_today"] = max(0.0, cloud_today - eb_today)
+                if cloud_lifetime is not None and eb_lifetime is not None:
                     sensors["ac_couple_energy_total"] = max(
                         0.0, cloud_lifetime - eb_lifetime
                     )
@@ -653,6 +645,34 @@ class DeviceProcessingMixin(_MixinBase):
                 ("grid_current_l2", "inverter_rms_current_s"),
                 ("grid_current_l3", "inverter_rms_current_t"),
                 ("battery_current", "battery_current"),
+                # Split-phase per-leg voltages (regs 127-128, 193-194).
+                # Not in the HTTP property map — cloud API only returns R/S/T.
+                ("eps_voltage_l1", "eps_l1_voltage"),
+                ("eps_voltage_l2", "eps_l2_voltage"),
+                ("grid_voltage_l1", "grid_l1_voltage"),
+                ("grid_voltage_l2", "grid_l2_voltage"),
+                # Split-phase total output (local-authoritative).
+                ("output_power", "output_power"),
+                # Split-phase per-leg power/apparent power (regs 129-132).
+                # Cloud may return None for EG4_OFFGRID — overlay as fallback.
+                ("eps_power_l1", "eps_l1_power"),
+                ("eps_power_l2", "eps_l2_power"),
+                ("eps_apparent_power_l1", "eps_l1_apparent_power"),
+                ("eps_apparent_power_l2", "eps_l2_apparent_power"),
+                # US split-phase per-leg power (regs 195-204).
+                ("inverter_power_l1", "inverter_power_l1"),
+                ("inverter_power_l2", "inverter_power_l2"),
+                ("rectifier_power_l1", "rectifier_power_l1"),
+                ("rectifier_power_l2", "rectifier_power_l2"),
+                ("generator_voltage_l1", "generator_l1_voltage"),
+                ("generator_voltage_l2", "generator_l2_voltage"),
+                ("grid_export_power_l1", "grid_export_power_l1"),
+                ("grid_export_power_l2", "grid_export_power_l2"),
+                ("grid_import_power_l1", "grid_import_power_l1"),
+                ("grid_import_power_l2", "grid_import_power_l2"),
+                # Reg 123 — used by ac_input_type-aware clamp so the clamp
+                # sees a fresh Modbus value rather than a stale cloud copy.
+                ("generator_power", "generator_power"),
             )
             for sensor_key, runtime_attr in _TRANSPORT_OVERLAY:
                 value = getattr(transport_runtime, runtime_attr, None)
@@ -674,6 +694,25 @@ class DeviceProcessingMixin(_MixinBase):
                 value = getattr(transport_energy, energy_attr, None)
                 if value is not None:
                     sensors[sensor_key] = value
+
+        # Regs 193-194 return 0 on some EG4_OFFGRID firmware revisions (same
+        # behavior as 18kPV/FlexBOSS per docs/DATA_MAPPING.md). Fall back to
+        # grid_voltage_r (reg 12) for split-phase systems — L1 and L2 are
+        # equal-magnitude legs relative to neutral.
+        if features.get("inverter_family") == "EG4_OFFGRID":
+            grid_v_r = processed["sensors"].get("grid_voltage_r")
+            if grid_v_r is not None:
+                for leg_key in ("grid_voltage_l1", "grid_voltage_l2"):
+                    v = processed["sensors"].get(leg_key)
+                    if v is None or v == 0:
+                        _LOGGER.debug(
+                            "EG4_OFFGRID %s: %s=%s, falling back to grid_voltage_r=%sV",
+                            inverter.serial_number,
+                            leg_key,
+                            v,
+                            grid_v_r,
+                        )
+                        processed["sensors"][leg_key] = grid_v_r
 
         # Add firmware_version as diagnostic sensor
         processed["sensors"]["firmware_version"] = firmware_version
@@ -1037,11 +1076,13 @@ class DeviceProcessingMixin(_MixinBase):
                 features[prop] = getattr(inverter_features, attr_name, False)
 
         # Device-family-specific flags not in pylxpweb's InverterFeatures.
-        # EG4_OFFGRID (12000XP, 6000XP): no per-leg AC couple regs, no board
-        # temp regs, but supports derived AC couple energy from cloud balance.
+        # EG4_OFFGRID (12000XP, 6000XP): per-leg AC couple regs 206-207 DO
+        # return data (read via _read_ac_couple_registers in both local and
+        # hybrid paths). Board temp regs (64, 108) are not populated.
+        # Cloud balance derivation is the energy source for AC couple.
         family = features.get("inverter_family")
         if family == "EG4_OFFGRID":
-            features["supports_ac_couple_per_leg"] = False
+            features["supports_ac_couple_per_leg"] = True
             features["supports_inverter_board_temps"] = False
             features["supports_ac_couple_energy_derived"] = True
 

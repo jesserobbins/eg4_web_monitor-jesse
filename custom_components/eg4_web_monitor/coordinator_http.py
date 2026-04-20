@@ -240,6 +240,19 @@ class HTTPUpdateMixin(_MixinBase):
                 if device_data.get("type") == "inverter":
                     await _read_ac_couple_registers(transport, device_data["sensors"])
                     await _read_ac_input_type(transport, device_data["sensors"])
+                    # The AC input port is single-purpose at any instant:
+                    # either Generator OR AC Couple. Mute the inactive pair
+                    # so consumers don't double-count the same watts.
+                    ac_input = device_data["sensors"].get("ac_input_type")
+                    if ac_input == "Generator":
+                        for k in (
+                            "ac_couple_power",
+                            "ac_couple_power_l1",
+                            "ac_couple_power_l2",
+                        ):
+                            device_data["sensors"][k] = None
+                    elif ac_input == "Grid":
+                        device_data["sensors"]["generator_power"] = None
             else:
                 device_data["sensors"]["connection_transport"] = "Cloud"
 

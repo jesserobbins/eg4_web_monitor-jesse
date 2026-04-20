@@ -541,6 +541,114 @@ class TestHybridMode:
         device_sensors = result["devices"]["INV001"]["sensors"]
         assert device_sensors["connection_transport"] == "Cloud"
 
+    @patch("custom_components.eg4_web_monitor.coordinator.LuxpowerClient")
+    @patch("custom_components.eg4_web_monitor.coordinator.aiohttp_client")
+    async def test_hybrid_generator_mode_clears_ac_couple(
+        self, mock_aiohttp, mock_client_cls, hass, hybrid_config_entry
+    ):
+        """When ac_input_type is 'Generator', AC couple sensors are muted."""
+        hybrid_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, hybrid_config_entry)
+
+        inv = _mock_inverter(serial="INV001")
+        mock_transport = MagicMock()
+        mock_transport.transport_type = "modbus"
+        mock_transport.host = "192.168.1.100"
+        inv._transport = mock_transport
+        coordinator.station = _mock_station([inv])
+
+        async def _fake_read_ac_couple(transport, sensors):
+            sensors["ac_couple_power"] = 2500
+            sensors["ac_couple_power_l1"] = 1300
+            sensors["ac_couple_power_l2"] = 1200
+
+        async def _fake_read_ac_input(transport, sensors):
+            sensors["ac_input_type"] = "Generator"
+
+        with (
+            patch.object(
+                coordinator,
+                "_process_inverter_object",
+                new=AsyncMock(
+                    return_value={
+                        "type": "inverter",
+                        "model": "12000XP",
+                        "sensors": {"generator_power": 2500},
+                        "batteries": {},
+                    }
+                ),
+            ),
+            patch(
+                "custom_components.eg4_web_monitor.coordinator_http._read_ac_couple_registers",
+                new=AsyncMock(side_effect=_fake_read_ac_couple),
+            ),
+            patch(
+                "custom_components.eg4_web_monitor.coordinator_http._read_ac_input_type",
+                new=AsyncMock(side_effect=_fake_read_ac_input),
+            ),
+        ):
+            result = await coordinator._async_update_hybrid_data()
+
+        sensors = result["devices"]["INV001"]["sensors"]
+        assert sensors["ac_couple_power"] is None
+        assert sensors["ac_couple_power_l1"] is None
+        assert sensors["ac_couple_power_l2"] is None
+        assert sensors["generator_power"] == 2500
+
+    @patch("custom_components.eg4_web_monitor.coordinator.LuxpowerClient")
+    @patch("custom_components.eg4_web_monitor.coordinator.aiohttp_client")
+    async def test_hybrid_grid_mode_clears_generator_power(
+        self, mock_aiohttp, mock_client_cls, hass, hybrid_config_entry
+    ):
+        """When ac_input_type is 'Grid', generator_power is muted."""
+        hybrid_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, hybrid_config_entry)
+
+        inv = _mock_inverter(serial="INV001")
+        mock_transport = MagicMock()
+        mock_transport.transport_type = "modbus"
+        mock_transport.host = "192.168.1.100"
+        inv._transport = mock_transport
+        coordinator.station = _mock_station([inv])
+
+        async def _fake_read_ac_couple(transport, sensors):
+            sensors["ac_couple_power"] = 2500
+            sensors["ac_couple_power_l1"] = 1300
+            sensors["ac_couple_power_l2"] = 1200
+
+        async def _fake_read_ac_input(transport, sensors):
+            sensors["ac_input_type"] = "Grid"
+
+        with (
+            patch.object(
+                coordinator,
+                "_process_inverter_object",
+                new=AsyncMock(
+                    return_value={
+                        "type": "inverter",
+                        "model": "12000XP",
+                        "sensors": {"generator_power": 2500},
+                        "batteries": {},
+                    }
+                ),
+            ),
+            patch(
+                "custom_components.eg4_web_monitor.coordinator_http._read_ac_couple_registers",
+                new=AsyncMock(side_effect=_fake_read_ac_couple),
+            ),
+            patch(
+                "custom_components.eg4_web_monitor.coordinator_http._read_ac_input_type",
+                new=AsyncMock(side_effect=_fake_read_ac_input),
+            ),
+        ):
+            result = await coordinator._async_update_hybrid_data()
+
+        sensors = result["devices"]["INV001"]["sensors"]
+        assert sensors["ac_couple_power"] == 2500
+        assert sensors["ac_couple_power_l1"] == 1300
+        assert sensors["ac_couple_power_l2"] == 1200
+        assert sensors["generator_power"] is None
+
 
 # ── HYBRID per-transport interval gating ─────────────────────────────
 

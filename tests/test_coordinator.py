@@ -1859,6 +1859,13 @@ class TestStaticLocalData:
         assert features["supports_split_phase"] is True
         assert features["supports_three_phase"] is False
 
+    def test_features_from_family_eg4_offgrid_supports_ac_couple_per_leg(self):
+        """EG4_OFFGRID (12000XP) reads per-leg AC couple regs 206-207 — flag True."""
+        features = _features_from_family("EG4_OFFGRID")
+        assert features["supports_ac_couple_per_leg"] is True
+        assert features["supports_inverter_board_temps"] is False
+        assert features["supports_ac_couple_energy_derived"] is True
+
     def test_apply_grid_type_override_split_phase(self):
         """_apply_grid_type_override sets correct flags for split_phase."""
         features = {"supports_split_phase": False, "supports_three_phase": True}
@@ -4708,6 +4715,169 @@ class TestHybridTransportExclusiveSensors:
 
         # Only non-None values from transport overlay should appear
         assert sensors["grid_current_l1"] == 4.5
+
+    async def test_transport_runtime_overlays_split_phase_sensors(
+        self, hass, mock_config_entry
+    ):
+        """Split-phase per-leg sensors from transport_runtime overlay for
+        EG4_OFFGRID in hybrid mode (cloud property map does not provide
+        grid_voltage_l1/l2, eps_voltage_l1/l2, output_power)."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        mock_inverter = MagicMock()
+        mock_inverter.serial_number = "1111111111"
+        mock_inverter.model = "12000XP"
+        mock_inverter.firmware_version = "1.0.0"
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter.detect_features = AsyncMock()
+        mock_inverter._transport = MagicMock()
+
+        mock_runtime = MagicMock()
+        # Existing overlay entries
+        mock_runtime.temperature_t1 = 35.0
+        mock_runtime.inverter_rms_current_r = None
+        mock_runtime.inverter_rms_current_s = None
+        mock_runtime.inverter_rms_current_t = None
+        mock_runtime.battery_current = None
+        # New split-phase overlay entries
+        mock_runtime.eps_l1_voltage = 121.0
+        mock_runtime.eps_l2_voltage = 120.5
+        mock_runtime.grid_l1_voltage = 120.8
+        mock_runtime.grid_l2_voltage = 120.3
+        mock_runtime.output_power = 4200
+        mock_runtime.eps_l1_power = 1100
+        mock_runtime.eps_l2_power = 900
+        mock_runtime.eps_l1_apparent_power = 1150
+        mock_runtime.eps_l2_apparent_power = 950
+        mock_runtime.inverter_power_l1 = 2100
+        mock_runtime.inverter_power_l2 = 2100
+        mock_runtime.rectifier_power_l1 = 0
+        mock_runtime.rectifier_power_l2 = 0
+        mock_runtime.generator_l1_voltage = 0
+        mock_runtime.generator_l2_voltage = 0
+        mock_runtime.grid_export_power_l1 = 500
+        mock_runtime.grid_export_power_l2 = 450
+        mock_runtime.grid_import_power_l1 = 0
+        mock_runtime.grid_import_power_l2 = 0
+        mock_runtime.generator_power = 0
+        mock_inverter._transport_runtime = mock_runtime
+
+        result = await coordinator._process_inverter_object(mock_inverter)
+        sensors = result["sensors"]
+
+        assert sensors["eps_voltage_l1"] == 121.0
+        assert sensors["eps_voltage_l2"] == 120.5
+        assert sensors["grid_voltage_l1"] == 120.8
+        assert sensors["grid_voltage_l2"] == 120.3
+        assert sensors["output_power"] == 4200
+        assert sensors["eps_power_l1"] == 1100
+        assert sensors["eps_power_l2"] == 900
+        assert sensors["eps_apparent_power_l1"] == 1150
+        assert sensors["eps_apparent_power_l2"] == 950
+        assert sensors["inverter_power_l1"] == 2100
+        assert sensors["inverter_power_l2"] == 2100
+        assert sensors["rectifier_power_l1"] == 0
+        assert sensors["rectifier_power_l2"] == 0
+        assert sensors["generator_voltage_l1"] == 0
+        assert sensors["generator_voltage_l2"] == 0
+        assert sensors["grid_export_power_l1"] == 500
+        assert sensors["grid_export_power_l2"] == 450
+        assert sensors["grid_import_power_l1"] == 0
+        assert sensors["grid_import_power_l2"] == 0
+        assert sensors["generator_power"] == 0
+
+    async def test_eg4_offgrid_grid_voltage_l1_l2_fallback(
+        self, hass, mock_config_entry
+    ):
+        """Regs 193-194 return 0 on some EG4_OFFGRID firmware — fall back to
+        grid_voltage_r for split-phase L1/L2."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        mock_inverter = MagicMock()
+        mock_inverter.serial_number = "1111111111"
+        mock_inverter.model = "12000XP"
+        mock_inverter.firmware_version = "1.0.0"
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter.detect_features = AsyncMock()
+        mock_inverter._transport = MagicMock()
+
+        # Stub out feature detection so features["inverter_family"] ==
+        # "EG4_OFFGRID". The real method uses inverter._features; replace
+        # on the instance method to return a controlled dict.
+        from unittest.mock import patch as _patch
+
+        mock_runtime = MagicMock()
+        mock_runtime.temperature_t1 = None
+        mock_runtime.inverter_rms_current_r = None
+        mock_runtime.inverter_rms_current_s = None
+        mock_runtime.inverter_rms_current_t = None
+        mock_runtime.battery_current = None
+        # Regs 193-194 return 0 (broken firmware)
+        mock_runtime.grid_l1_voltage = 0
+        mock_runtime.grid_l2_voltage = 0
+        # Reg 12 (grid_voltage_r) returns the real reading. This field is
+        # supplied by _get_inverter_property_map() from the cloud API, so we
+        # pre-seed it on the inverter rather than on _transport_runtime.
+        mock_inverter.grid_voltage_r = 121.5
+        mock_inverter._transport_runtime = mock_runtime
+
+        with _patch.object(
+            coordinator,
+            "_extract_inverter_features",
+            return_value={
+                "inverter_family": "EG4_OFFGRID",
+                "supports_split_phase": True,
+            },
+        ):
+            result = await coordinator._process_inverter_object(mock_inverter)
+
+        sensors = result["sensors"]
+        assert sensors["grid_voltage_l1"] == 121.5
+        assert sensors["grid_voltage_l2"] == 121.5
+
+    async def test_eg4_offgrid_no_fallback_when_regs_193_194_valid(
+        self, hass, mock_config_entry
+    ):
+        """When regs 193-194 return real values, do NOT overwrite with fallback."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        mock_inverter = MagicMock()
+        mock_inverter.serial_number = "1111111111"
+        mock_inverter.model = "12000XP"
+        mock_inverter.firmware_version = "1.0.0"
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter.detect_features = AsyncMock()
+        mock_inverter._transport = MagicMock()
+
+        from unittest.mock import patch as _patch
+
+        mock_runtime = MagicMock()
+        mock_runtime.temperature_t1 = None
+        mock_runtime.inverter_rms_current_r = None
+        mock_runtime.inverter_rms_current_s = None
+        mock_runtime.inverter_rms_current_t = None
+        mock_runtime.battery_current = None
+        mock_runtime.grid_l1_voltage = 119.8
+        mock_runtime.grid_l2_voltage = 120.2
+        mock_inverter.grid_voltage_r = 240.0
+        mock_inverter._transport_runtime = mock_runtime
+
+        with _patch.object(
+            coordinator,
+            "_extract_inverter_features",
+            return_value={
+                "inverter_family": "EG4_OFFGRID",
+                "supports_split_phase": True,
+            },
+        ):
+            result = await coordinator._process_inverter_object(mock_inverter)
+
+        sensors = result["sensors"]
+        assert sensors["grid_voltage_l1"] == 119.8
+        assert sensors["grid_voltage_l2"] == 120.2
 
 
 class TestHybridParallelBatteryCountOverride:

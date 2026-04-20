@@ -154,8 +154,14 @@ Mapping chain: Register → `_canonical_reader.read_scaled()` → `InverterRunti
 | 193 | `grid_l1_voltage` | ÷10 | V | `grid_l1_voltage` | `grid_voltage_l1` |
 | 194 | `grid_l2_voltage` | ÷10 | V | `grid_l2_voltage` | `grid_voltage_l2` |
 
-> **Note:** Regs 193-194 return 0 on 18kPV/FlexBOSS firmware. GridBOSS reads
-> correct grid L1/L2 voltages from its own register map (regs 4-5).
+> **Note:** Regs 193-194 return 0 on 18kPV/FlexBOSS firmware and on some
+> EG4_OFFGRID (12000XP/6000XP) firmware revisions. GridBOSS reads correct
+> grid L1/L2 voltages from its own register map (regs 4-5). For EG4_OFFGRID
+> inverters without a GridBOSS, the integration falls back to
+> `grid_voltage_r` (reg 12) when regs 193-194 are 0 — split-phase L1 and L2
+> are equal-magnitude legs relative to neutral, so the R-phase reading is a
+> reasonable approximation. See `_process_inverter_object` in
+> `coordinator_mixins.py` for the fallback logic.
 
 **Three-Phase Registers (LXP only):**
 
