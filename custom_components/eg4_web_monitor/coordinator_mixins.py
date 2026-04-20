@@ -1076,13 +1076,14 @@ class DeviceProcessingMixin(_MixinBase):
                 features[prop] = getattr(inverter_features, attr_name, False)
 
         # Device-family-specific flags not in pylxpweb's InverterFeatures.
-        # EG4_OFFGRID (12000XP, 6000XP): per-leg AC couple regs 206-207 DO
-        # return data (read via _read_ac_couple_registers in both local and
-        # hybrid paths). Board temp regs (64, 108) are not populated.
-        # Cloud balance derivation is the energy source for AC couple.
+        # EG4_OFFGRID (12000XP, 6000XP): per-leg AC couple regs 206-207
+        # return 0 on real hardware (firmware limitation — confirmed
+        # empirically against a live 12000XP: reg 153 total = 212 W while
+        # regs 206-207 = 0 W each). Board temp regs (64, 108) not
+        # populated. Cloud balance derivation supplies AC couple energy.
         family = features.get("inverter_family")
         if family == "EG4_OFFGRID":
-            features["supports_ac_couple_per_leg"] = True
+            features["supports_ac_couple_per_leg"] = False
             features["supports_inverter_board_temps"] = False
             features["supports_ac_couple_energy_derived"] = True
 

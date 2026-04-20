@@ -1859,10 +1859,14 @@ class TestStaticLocalData:
         assert features["supports_split_phase"] is True
         assert features["supports_three_phase"] is False
 
-    def test_features_from_family_eg4_offgrid_supports_ac_couple_per_leg(self):
-        """EG4_OFFGRID (12000XP) reads per-leg AC couple regs 206-207 — flag True."""
+    def test_features_from_family_eg4_offgrid_ac_couple_per_leg_disabled(self):
+        """EG4_OFFGRID regs 206-207 return 0 on real hardware — flag False.
+
+        Confirmed empirically on a live 12000XP: reg 153 (total) reports
+        212 W AC couple while regs 206-207 (per-leg) both read 0 W.
+        """
         features = _features_from_family("EG4_OFFGRID")
-        assert features["supports_ac_couple_per_leg"] is True
+        assert features["supports_ac_couple_per_leg"] is False
         assert features["supports_inverter_board_temps"] is False
         assert features["supports_ac_couple_energy_derived"] is True
 
