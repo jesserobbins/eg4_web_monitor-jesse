@@ -22,6 +22,7 @@ PARAM_FUNC_FORCED_CHG_EN = "FUNC_FORCED_CHG_EN"
 
 # Bit field parameter names (register 110)
 PARAM_FUNC_GREEN_EN = "FUNC_GREEN_EN"
+PARAM_FUNC_BATTERY_ECO_EN = "FUNC_BATTERY_ECO_EN"  # Register 110, bit 9
 
 # Extended bit field parameter names (registers 179, 233)
 PARAM_FUNC_GRID_PEAK_SHAVING = "FUNC_GRID_PEAK_SHAVING"
