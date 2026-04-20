@@ -614,7 +614,16 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
         bit 15 (Modbus sweep confirmed reg 110 = 0x8080 when ECO on).
         Perform a direct read-modify-write on the correct bit.
         """
-        inverter = self._get_inverter_or_raise()
+        # In hybrid mode, inverter lives in station.all_inverters, not
+        # _inverter_cache. Check both sources.
+        inverter = self.coordinator.get_inverter_object(self._serial)
+        if inverter is None and hasattr(self.coordinator, "station") and self.coordinator.station:
+            for inv in self.coordinator.station.all_inverters:
+                if inv.serial_number == self._serial:
+                    inverter = inv
+                    break
+        if inverter is None:
+            raise HomeAssistantError(f"Inverter {self._serial} not found")
         transport = getattr(inverter, "_transport", None)
         if transport is None:
             raise HomeAssistantError(
