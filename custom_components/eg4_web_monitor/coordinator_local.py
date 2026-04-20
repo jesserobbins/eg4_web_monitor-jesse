@@ -403,6 +403,22 @@ class LocalTransportMixin(_MixinBase):
                         "AC couple param registers 220-223 read failed: %s", ac_err
                     )
 
+            # pylxpweb maps FUNC_BATTERY_ECO_EN to bit 9 of reg 110, but the
+            # 12000XP hardware (confirmed via Modbus sweep: reg 110 = 0x8080
+            # when ECO enabled) uses bit 15.  Override with the correct bit.
+            try:
+                raw_110 = await transport.read_parameters(110, 1)
+                if 110 in raw_110:
+                    eco_on = bool(raw_110[110] & (1 << 15))
+                    params["FUNC_BATTERY_ECO_EN"] = eco_on
+                    _LOGGER.debug(
+                        "Battery ECO override: reg110=0x%04X, bit15=%s",
+                        raw_110[110],
+                        eco_on,
+                    )
+            except Exception as eco_err:
+                _LOGGER.debug("Battery ECO raw read failed: %s", eco_err)
+
             _LOGGER.debug("Read %d parameters from Modbus registers", len(params))
             # Debug: log key number entity parameters
             key_params = {
