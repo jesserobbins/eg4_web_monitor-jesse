@@ -127,10 +127,55 @@ async def _read_ac_couple_registers(transport: Any, sensors: dict[str, Any]) -> 
     except Exception as err:
         _LOGGER.warning("AC couple power registers 206-207 read failed: %s", err)
 
-    # NOTE: Registers 124-126 are generator energy (Egen_day, Egen_all L/H),
-    # NOT AC couple energy. There are no dedicated AC couple energy registers
-    # in the Modbus spec. Use HA's Riemann sum integration helper to derive
-    # energy from the ac_couple_power sensor (register 153) instead.
+    # NOTE: Registers 124-126 are dual-purpose (generator OR AC-couple energy,
+    # controlled by reg 77 bit 0). They are read by _read_ac_couple_energy()
+    # below, called after _read_ac_input_type() so the port mode is known.
+
+
+async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> None:
+    """Read AC-couple energy from input registers 124-126 (kWh, scale ÷10).
+
+    The EG4 inverter's generator-input port is dual-purpose: configured for
+    either a physical generator OR for AC-coupled solar (reg 77 bit 0). The
+    energy counters at regs 124-126 follow the same rule — they count
+    whatever flows through the port. When the port is in "Grid" mode, the
+    counters reflect AC-couple energy.
+
+    Only populates ac_couple_energy_today/total when ac_input_type == "Grid".
+    Call this AFTER _read_ac_input_type() so sensors["ac_input_type"] is set.
+
+    Reg layout:
+      124           : energy today, unsigned 16-bit, ÷10 = kWh
+      125-126 (LH)  : energy total, unsigned 32-bit (low word first), ÷10 = kWh
+    """
+    if sensors.get("ac_input_type") != "Grid":
+        return  # port is Generator — leave ac_couple_energy_* as-is
+
+    read_fn = getattr(transport, "_read_input_registers", None)
+    if read_fn is None:
+        return
+
+    try:
+        regs = await read_fn(124, 3)
+    except Exception as err:
+        _LOGGER.warning("AC couple energy registers 124-126 read failed: %s", err)
+        return
+
+    if not regs or len(regs) < 3:
+        _LOGGER.warning(
+            "AC couple energy: unexpected response from regs 124-126: %s", regs
+        )
+        return
+
+    today = regs[0] / 10.0
+    total = (regs[1] | (regs[2] << 16)) / 10.0
+    sensors["ac_couple_energy_today"] = today
+    sensors["ac_couple_energy_total"] = total
+    _LOGGER.debug(
+        "AC couple energy: reg124=%.2fkWh today, regs125-126=%.2fkWh total",
+        today,
+        total,
+    )
 
 
 async def _read_ac_input_type(transport: Any, sensors: dict[str, Any]) -> None:
@@ -433,6 +478,8 @@ class LocalTransportMixin(_MixinBase):
         if static_transport:
             await _read_ac_couple_registers(static_transport, device_data["sensors"])
             await _read_ac_input_type(static_transport, device_data["sensors"])
+            # _read_ac_couple_energy depends on ac_input_type being set
+            await _read_ac_couple_energy(static_transport, device_data["sensors"])
             # The AC input port is single-purpose: either Generator OR AC
             # Couple. Mute the inactive pair so consumers don't double-count.
             ac_input = device_data["sensors"].get("ac_input_type")
@@ -441,6 +488,8 @@ class LocalTransportMixin(_MixinBase):
                     "ac_couple_power",
                     "ac_couple_power_l1",
                     "ac_couple_power_l2",
+                    "ac_couple_energy_today",
+                    "ac_couple_energy_total",
                 ):
                     device_data["sensors"][k] = None
             elif ac_input == "Grid":

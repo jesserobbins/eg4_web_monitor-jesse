@@ -35,7 +35,11 @@ from .const import (
     CONNECTION_TYPE_HYBRID,
     DOMAIN,
 )
-from .coordinator_local import _read_ac_couple_registers, _read_ac_input_type
+from .coordinator_local import (
+    _read_ac_couple_energy,
+    _read_ac_couple_registers,
+    _read_ac_input_type,
+)
 from .coordinator_mappings import (
     _build_individual_battery_mapping,
     _get_transport_label,
@@ -240,6 +244,9 @@ class HTTPUpdateMixin(_MixinBase):
                 if device_data.get("type") == "inverter":
                     await _read_ac_couple_registers(transport, device_data["sensors"])
                     await _read_ac_input_type(transport, device_data["sensors"])
+                    # AC couple energy: direct read (regs 124-126) supersedes
+                    # the cloud-derivation fallback in _process_inverter_object.
+                    await _read_ac_couple_energy(transport, device_data["sensors"])
                     # The AC input port is single-purpose at any instant:
                     # either Generator OR AC Couple. Mute the inactive pair
                     # so consumers don't double-count the same watts.
@@ -249,6 +256,8 @@ class HTTPUpdateMixin(_MixinBase):
                             "ac_couple_power",
                             "ac_couple_power_l1",
                             "ac_couple_power_l2",
+                            "ac_couple_energy_today",
+                            "ac_couple_energy_total",
                         ):
                             device_data["sensors"][k] = None
                     elif ac_input == "Grid":

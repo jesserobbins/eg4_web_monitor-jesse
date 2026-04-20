@@ -317,9 +317,7 @@ class TestReadACCouplePower:
 
         transport = MagicMock()
         # Call 1: reg 153 (total), Call 2: regs 206-207 (per-leg)
-        transport._read_input_registers = AsyncMock(
-            side_effect=[[2700], [1500, 1200]]
-        )
+        transport._read_input_registers = AsyncMock(side_effect=[[2700], [1500, 1200]])
         sensors: dict = {}
 
         await _read_ac_couple_registers(transport, sensors)
@@ -338,9 +336,7 @@ class TestReadACCouplePower:
 
         transport = MagicMock()
         # 65036 = -500 as signed int16 (65536 - 500)
-        transport._read_input_registers = AsyncMock(
-            side_effect=[[65036], [65036, 0]]
-        )
+        transport._read_input_registers = AsyncMock(side_effect=[[65036], [65036, 0]])
         sensors: dict = {}
 
         await _read_ac_couple_registers(transport, sensors)
@@ -446,14 +442,109 @@ class TestReadACInputType:
         )
 
         transport = MagicMock()
-        transport._read_input_registers = AsyncMock(
-            side_effect=RuntimeError("timeout")
-        )
+        transport._read_input_registers = AsyncMock(side_effect=RuntimeError("timeout"))
         sensors: dict = {}
 
         await _read_ac_input_type(transport, sensors)
 
         assert "ac_input_type" not in sensors
+
+
+class TestReadACCoupleEnergy:
+    """Test direct register read for AC couple energy (registers 124-126)."""
+
+    async def test_reads_energy_when_grid_mode(self):
+        """Port in Grid mode: regs 124-126 populate ac_couple_energy_today/total."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_ac_couple_energy,
+        )
+
+        transport = MagicMock()
+        # reg 124 = 25 (÷10 = 2.5 kWh today)
+        # reg 125 = low word, reg 126 = high word
+        # 1000 | (2 << 16) = 131_072 + 1000 = 132_072 → /10 = 13207.2 kWh
+        transport._read_input_registers = AsyncMock(return_value=[25, 1000, 2])
+        sensors: dict = {"ac_input_type": "Grid"}
+
+        await _read_ac_couple_energy(transport, sensors)
+
+        assert sensors["ac_couple_energy_today"] == 2.5
+        assert sensors["ac_couple_energy_total"] == 13207.2
+
+    async def test_skips_when_generator_mode(self):
+        """Port in Generator mode: regs 124-126 reflect generator, not AC couple."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_ac_couple_energy,
+        )
+
+        transport = MagicMock()
+        transport._read_input_registers = AsyncMock(return_value=[100, 5000, 10])
+        sensors: dict = {"ac_input_type": "Generator"}
+
+        await _read_ac_couple_energy(transport, sensors)
+
+        assert "ac_couple_energy_today" not in sensors
+        assert "ac_couple_energy_total" not in sensors
+        transport._read_input_registers.assert_not_called()
+
+    async def test_skips_when_ac_input_type_unknown(self):
+        """Without ac_input_type set, the function is a no-op (defensive)."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_ac_couple_energy,
+        )
+
+        transport = MagicMock()
+        transport._read_input_registers = AsyncMock(return_value=[25, 1000, 2])
+        sensors: dict = {}
+
+        await _read_ac_couple_energy(transport, sensors)
+
+        assert "ac_couple_energy_today" not in sensors
+        transport._read_input_registers.assert_not_called()
+
+    async def test_skips_when_no_read_fn(self):
+        """Gracefully skips when transport lacks _read_input_registers."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_ac_couple_energy,
+        )
+
+        transport = MagicMock(spec=[])
+        sensors: dict = {"ac_input_type": "Grid"}
+
+        await _read_ac_couple_energy(transport, sensors)
+
+        assert "ac_couple_energy_today" not in sensors
+
+    async def test_handles_read_failure(self):
+        """Transport read failure logged but doesn't raise."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_ac_couple_energy,
+        )
+
+        transport = MagicMock()
+        transport._read_input_registers = AsyncMock(
+            side_effect=RuntimeError("modbus timeout")
+        )
+        sensors: dict = {"ac_input_type": "Grid"}
+
+        await _read_ac_couple_energy(transport, sensors)
+
+        assert "ac_couple_energy_today" not in sensors
+
+    async def test_handles_short_response(self):
+        """Short response logs warning but doesn't raise."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_ac_couple_energy,
+        )
+
+        transport = MagicMock()
+        # Only 2 regs returned instead of 3
+        transport._read_input_registers = AsyncMock(return_value=[25, 1000])
+        sensors: dict = {"ac_input_type": "Grid"}
+
+        await _read_ac_couple_energy(transport, sensors)
+
+        assert "ac_couple_energy_today" not in sensors
 
 
 # ── Voltage aliasing in _process_single_local_device ─────────────────
@@ -535,9 +626,7 @@ class TestACCoupleParamFallback:
         assert result.get("HOLD_AC_COUPLE_START_VOLT") == 480
         assert result.get("HOLD_AC_COUPLE_END_VOLT") == 570
 
-    async def test_fallback_skipped_when_named_present(
-        self, hass, local_config_entry
-    ):
+    async def test_fallback_skipped_when_named_present(self, hass, local_config_entry):
         """Raw fallback is skipped if named params already have AC couple keys."""
         local_config_entry.add_to_hass(hass)
         coordinator = EG4DataUpdateCoordinator(hass, local_config_entry)
