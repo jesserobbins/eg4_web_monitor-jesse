@@ -52,8 +52,15 @@ WORKING_MODES = {
     "ac_couple_mode": {
         "name": "AC Coupling Mode",
         "param": "FUNC_179_BIT11",
-        "description": "AC coupling for external inverter power sources",
+        "description": "AC couple with existing grid-tied solar; inverter manages battery charging and excess PV",
         "icon": "mdi:solar-power-variant",
+        "entity_category": EntityCategory.CONFIG,
+    },
+    "battery_eco_mode": {
+        "name": "Battery ECO Mode",
+        "param": "FUNC_BATTERY_ECO_EN",
+        "description": "Switches to grid bypass mode when at EOD and not AC charging. Increases UPS switchover time.",
+        "icon": "mdi:battery-heart-variant",
         "entity_category": EntityCategory.CONFIG,
     },
 }
@@ -71,4 +78,5 @@ FUNCTION_PARAM_MAPPING = {
     "FUNC_FORCED_DISCHG_EN": "FUNC_FORCED_DISCHG_EN",
     "FUNC_SET_TO_STANDBY": "FUNC_SET_TO_STANDBY",
     "FUNC_179_BIT11": "FUNC_179_BIT11",
+    "FUNC_BATTERY_ECO_EN": "FUNC_BATTERY_ECO_EN",
 }

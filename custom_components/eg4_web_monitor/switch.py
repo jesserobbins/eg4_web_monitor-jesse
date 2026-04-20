@@ -154,6 +154,9 @@ async def async_setup_entry(
                 entities.append(EG4OffGridModeSwitch(coordinator, serial))
 
                 # Add working mode switches
+                features = device_data.get("features", {})
+                family = features.get("inverter_family")
+
                 for mode_key, mode_config in WORKING_MODES.items():
                     # For local-only mode, skip working modes without a Modbus
                     # register mapping in _WORKING_MODE_PARAMETERS.
@@ -166,6 +169,19 @@ async def async_setup_entry(
                                 serial,
                             )
                             continue
+
+                    # EG4_OFFGRID (12000XP/6000XP) cannot sell to grid —
+                    # peak shaving and forced discharge are not applicable.
+                    if family == INVERTER_FAMILY_EG4_OFFGRID and mode_key in (
+                        "peak_shaving_mode",
+                        "forced_discharge_mode",
+                    ):
+                        _LOGGER.debug(
+                            "Skipping %s for %s (not supported on EG4_OFFGRID)",
+                            mode_key,
+                            serial,
+                        )
+                        continue
 
                     entities.append(
                         EG4WorkingModeSwitch(
