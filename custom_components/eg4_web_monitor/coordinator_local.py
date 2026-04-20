@@ -133,7 +133,7 @@ async def _read_ac_couple_registers(transport: Any, sensors: dict[str, Any]) -> 
 
 
 async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> None:
-    """Read AC-couple energy from input registers 124-126 (kWh, scale ÷10).
+    """Read AC-couple energy from input registers 124-126 (Wh → kWh).
 
     The EG4 inverter's generator-input port is dual-purpose: configured for
     either a physical generator OR for AC-coupled solar (reg 77 bit 0). The
@@ -144,9 +144,14 @@ async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> Non
     Only populates ac_couple_energy_today/total when ac_input_type == "Grid".
     Call this AFTER _read_ac_input_type() so sensors["ac_input_type"] is set.
 
+    **Scaling note:** Unlike standard energy registers (31, 33-37, 46-59)
+    which use ÷10 (0.1 kWh units), the generator-port energy registers
+    store raw **watt-hours**. Empirically confirmed on a live 12000XP:
+    reg 124 raw=2304 corresponds to ~2.3 kWh daily AC couple (not 230.4).
+
     Reg layout:
-      124           : energy today, unsigned 16-bit, ÷10 = kWh
-      125-126 (LH)  : energy total, unsigned 32-bit (low word first), ÷10 = kWh
+      124           : energy today, unsigned 16-bit, raw Wh
+      125-126 (LH)  : energy total, unsigned 32-bit (low word first), raw Wh
     """
     if sensors.get("ac_input_type") != "Grid":
         return  # port is Generator — leave ac_couple_energy_* as-is
@@ -167,13 +172,20 @@ async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> Non
         )
         return
 
-    today = regs[0] / 10.0
-    total = (regs[1] | (regs[2] << 16)) / 10.0
-    sensors["ac_couple_energy_today"] = today
-    sensors["ac_couple_energy_total"] = total
+    # Raw values are in Wh; convert to kWh for HA energy sensors.
+    today = regs[0] / 1000.0
+    total_raw = regs[1] | (regs[2] << 16)
+    total = total_raw / 1000.0
+    sensors["ac_couple_energy_today"] = round(today, 3)
+    sensors["ac_couple_energy_total"] = round(total, 3)
     _LOGGER.debug(
-        "AC couple energy: reg124=%.2fkWh today, regs125-126=%.2fkWh total",
+        "AC couple energy: reg124 raw=%d (%.3f kWh today), "
+        "regs125-126 raw=%d [L=%d H=%d] (%.3f kWh total)",
+        regs[0],
         today,
+        total_raw,
+        regs[1],
+        regs[2],
         total,
     )
 

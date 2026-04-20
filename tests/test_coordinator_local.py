@@ -460,16 +460,15 @@ class TestReadACCoupleEnergy:
         )
 
         transport = MagicMock()
-        # reg 124 = 25 (÷10 = 2.5 kWh today)
-        # reg 125 = low word, reg 126 = high word
-        # 1000 | (2 << 16) = 131_072 + 1000 = 132_072 → /10 = 13207.2 kWh
-        transport._read_input_registers = AsyncMock(return_value=[25, 1000, 2])
+        # reg 124 = 2500 raw Wh → 2.5 kWh today
+        # regs 125-126: low=1000, high=2 → (2 << 16) | 1000 = 132072 Wh → 132.072 kWh
+        transport._read_input_registers = AsyncMock(return_value=[2500, 1000, 2])
         sensors: dict = {"ac_input_type": "Grid"}
 
         await _read_ac_couple_energy(transport, sensors)
 
         assert sensors["ac_couple_energy_today"] == 2.5
-        assert sensors["ac_couple_energy_total"] == 13207.2
+        assert sensors["ac_couple_energy_total"] == 132.072
 
     async def test_skips_when_generator_mode(self):
         """Port in Generator mode: regs 124-126 reflect generator, not AC couple."""
