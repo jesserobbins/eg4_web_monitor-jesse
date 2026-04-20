@@ -75,18 +75,16 @@ def _unsigned_to_signed16(val: int) -> int:
 
 
 async def _read_ac_couple_registers(transport: Any, sensors: dict[str, Any]) -> None:
-    """Read AC couple power and energy from input registers.
+    """Read AC couple **power** from input registers.
 
-    Power:
-      Register 153 (ACCouplePower): total AC-coupled inverter power, raw = watts.
-      Registers 206-207 (L1/L2): per-leg split-phase power, signed 16-bit, watts.
+    Register 153 (ACCouplePower): total AC-coupled inverter power, raw = watts.
+    Registers 206-207 (L1/L2): per-leg split-phase power, signed 16-bit, watts.
 
-    Energy:
-      Register 124: generator/AC-couple energy today (÷10 = kWh).
-      Registers 125-126: generator/AC-couple energy total (32-bit, ÷10 = kWh).
+    Energy registers 124-126 are handled separately by _read_ac_couple_energy()
+    because they are dual-purpose (generator OR AC couple, gated on reg 77 bit 0).
 
-    None of these are in pylxpweb's standard energy read groups so we read
-    them directly via FC 04.
+    None of these are in pylxpweb's standard read groups so we read them
+    directly via FC 04.
     """
     read_fn = getattr(transport, "_read_input_registers", None)
     if read_fn is None:
@@ -505,6 +503,10 @@ class LocalTransportMixin(_MixinBase):
                 ):
                     device_data["sensors"][k] = None
             elif ac_input == "Grid":
+                # Mute generator sensors; regs 124-126 are read as AC
+                # couple by _read_ac_couple_energy above.
+                # generator_energy_today/total are not currently exposed
+                # as HA sensors — add them here if they are.
                 device_data["sensors"]["generator_power"] = None
 
         transport = getattr(inverter, "_transport", None)

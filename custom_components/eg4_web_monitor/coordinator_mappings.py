@@ -689,9 +689,11 @@ def _build_energy_sensor_mapping(energy_data: Any) -> dict[str, Any]:
         "eps_energy_today_l2": energy_data.eps_l2_energy_today,
         "eps_energy_total_l1": energy_data.eps_l1_energy_total,
         "eps_energy_total_l2": energy_data.eps_l2_energy_total,
-        # NOTE: Registers 124-126 are generator energy, not AC couple energy.
-        # AC couple energy should be derived via HA's Riemann sum integration
-        # helper from the ac_couple_power sensor (register 153).
+        # NOTE: Registers 124-126 are dual-purpose (generator OR AC-couple
+        # energy, controlled by reg 77 bit 0). When ac_input_type == "Grid",
+        # they reflect AC-couple energy; when "Generator", generator energy.
+        # _read_ac_couple_energy() in coordinator_local.py handles the read
+        # and assigns to ac_couple_energy_today/total accordingly.
     }
 
 

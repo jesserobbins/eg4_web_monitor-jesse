@@ -261,6 +261,10 @@ class HTTPUpdateMixin(_MixinBase):
                         ):
                             device_data["sensors"][k] = None
                     elif ac_input == "Grid":
+                        # Mute generator sensors; regs 124-126 are read as
+                        # AC couple by _read_ac_couple_energy above.
+                        # generator_energy_today/total are not currently
+                        # exposed as HA sensors — add them here if they are.
                         device_data["sensors"]["generator_power"] = None
             else:
                 device_data["sensors"]["connection_transport"] = "Cloud"
