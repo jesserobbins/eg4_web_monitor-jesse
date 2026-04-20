@@ -437,23 +437,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: EG4ConfigEntry) -> bool:
     # One-time cleanup: remove stale smart port entities from previous versions
     # that created entities for all 4 ports. Now only active ports get entities
     # (determined dynamically by _filter_unused_smart_port_sensors).
-    from .coordinator_mappings import GRIDBOSS_SMART_PORT_POWER_KEYS
+    from .coordinator_mappings import GRIDBOSS_SMART_PORT_DYNAMIC_KEYS
 
     active_smart_port_keys: set[str] = set()
+    gridboss_serials: set[str] = set()
     if coordinator.data and "devices" in coordinator.data:
-        for device_data in coordinator.data["devices"].values():
+        for serial, device_data in coordinator.data["devices"].items():
             if device_data.get("type") == "gridboss":
+                gridboss_serials.add(serial)
                 active_smart_port_keys.update(
                     k
                     for k in device_data.get("sensors", {})
-                    if k in GRIDBOSS_SMART_PORT_POWER_KEYS
+                    if k in GRIDBOSS_SMART_PORT_DYNAMIC_KEYS
                 )
     for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
         if entity.domain != "sensor":
             continue
+        # Only clean up entities that belong to a GridBOSS device; inverter
+        # sensors like ac_couple_power share the same key suffix but must not
+        # be removed by this cleanup pass.
+        if not any(entity.unique_id.startswith(f"{s}_") for s in gridboss_serials):
+            continue
         # Smart port unique IDs contain sensor keys like "smart_load1_power_l1"
         # Match by checking if any smart port key appears in the unique_id suffix
-        for sp_key in GRIDBOSS_SMART_PORT_POWER_KEYS:
+        for sp_key in GRIDBOSS_SMART_PORT_DYNAMIC_KEYS:
             if (
                 entity.unique_id.endswith(f"_{sp_key}")
                 and sp_key not in active_smart_port_keys
@@ -504,26 +511,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: EG4ConfigEntry) -> bool
     if unload_ok:
         coordinator = entry.runtime_data
 
-        # Clean up coordinator background tasks
+        # Shutdown disconnects all transports (unblocking in-flight I/O),
+        # cancels background tasks, and notifies the base class.
         await coordinator.async_shutdown()
 
-        # Clean up HTTP client if present
+        # Clean up HTTP client if present (not a transport, separate lifecycle)
         if coordinator.client is not None:
             await coordinator.client.close()
-
-        # Clean up Modbus transport if present
-        if (
-            hasattr(coordinator, "_modbus_transport")
-            and coordinator._modbus_transport is not None
-        ):
-            await coordinator._modbus_transport.disconnect()
-
-        # Clean up Dongle transport if present
-        if (
-            hasattr(coordinator, "_dongle_transport")
-            and coordinator._dongle_transport is not None
-        ):
-            await coordinator._dongle_transport.disconnect()
 
     return bool(unload_ok)
 

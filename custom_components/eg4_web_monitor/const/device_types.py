@@ -108,6 +108,24 @@ SPLIT_PHASE_ONLY_SENSORS: frozenset[str] = frozenset(
         "grid_voltage_l1",
         "grid_voltage_l2",
         "output_power",
+        # EPS per-leg apparent power and energy
+        "eps_apparent_power_l1",
+        "eps_apparent_power_l2",
+        "eps_energy_today_l1",
+        "eps_energy_today_l2",
+        "eps_energy_total_l1",
+        "eps_energy_total_l2",
+        # Per-leg grid power breakdowns
+        "inverter_power_l1",
+        "inverter_power_l2",
+        "rectifier_power_l1",
+        "rectifier_power_l2",
+        "grid_export_power_l1",
+        "grid_export_power_l2",
+        "grid_import_power_l1",
+        "grid_import_power_l2",
+        "generator_voltage_l1",
+        "generator_voltage_l2",
     }
 )
 
@@ -143,6 +161,36 @@ DISCHARGE_RECOVERY_SENSORS: frozenset[str] = frozenset(
     {
         "discharge_recovery_lag_soc",
         "discharge_recovery_lag_volt",
+    }
+)
+
+# Sensors requiring per-leg AC couple registers (regs 206-207)
+# Only valid on GridBOSS/MID devices; standard inverters always read 0
+AC_COUPLE_PER_LEG_SENSORS: frozenset[str] = frozenset(
+    {
+        "ac_couple_power_l1",
+        "ac_couple_power_l2",
+    }
+)
+
+# AC couple energy sensors derived from cloud consumption minus energy balance
+# EG4_OFFGRID lacks dedicated AC couple energy registers; energy is derived
+# in hybrid mode from cloud todayUsage/totalUsage minus local energy balance.
+# Other families use direct registers (GridBOSS eACcouple* fields).
+AC_COUPLE_ENERGY_DERIVED_SENSORS: frozenset[str] = frozenset(
+    {
+        "ac_couple_energy_today",
+        "ac_couple_energy_total",
+    }
+)
+
+# Sensors requiring inverter board temperature registers
+# reg 64 (Tinner — inverter internal board temp) and reg 108 (T1 — BT/board temp)
+# Not populated on EG4_OFFGRID models; radiator temps (regs 65-66) are separate
+INVERTER_BOARD_TEMP_SENSORS: frozenset[str] = frozenset(
+    {
+        "internal_temperature",
+        "bt_temperature",
     }
 )
 

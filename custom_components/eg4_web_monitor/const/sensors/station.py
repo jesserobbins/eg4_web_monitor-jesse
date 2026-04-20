@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from homeassistant.const import EntityCategory
 
+from .types import SensorConfig
+
 # Station sensor types - read-only display sensors
-STATION_SENSOR_TYPES = {
+STATION_SENSOR_TYPES: dict[str, SensorConfig] = {
     "station_name": {
         "name": "Station Name",
         "icon": "mdi:home-lightning-bolt-outline",
@@ -35,15 +37,17 @@ STATION_SENSOR_TYPES = {
         "entity_category": EntityCategory.DIAGNOSTIC,
     },
     # -------------------------------------------------------------------------
-    # Last Polled Diagnostic Sensor
+    # Last Polled Diagnostic Sensor (disabled by default)
     # Shows when station data was last fetched, not when it last changed.
-    # Helps users understand if the integration is actively polling.
+    # Disabled by default because it updates every polling cycle and creates
+    # noisy state history. Users can enable it via the entity registry.
     # -------------------------------------------------------------------------
     "station_last_polled": {
         "name": "Last Polled",
         "device_class": "timestamp",
         "icon": "mdi:clock-check",
         "entity_category": EntityCategory.DIAGNOSTIC,
+        "enabled_default": False,
     },
     # -------------------------------------------------------------------------
     # API Monitoring Sensors — track cloud API usage for rate limit compliance.

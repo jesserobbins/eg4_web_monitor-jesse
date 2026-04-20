@@ -347,6 +347,8 @@ Mapping chain: Register → `read_scaled()` → `MidboxRuntimeData` field
 | 5 | `grid_l2_voltage` | `grid_l2_voltage` | `grid_voltage_l2` |
 | 6 | `ups_l1_voltage` | `ups_l1_voltage` | `load_voltage_l1` |
 | 7 | `ups_l2_voltage` | `ups_l2_voltage` | `load_voltage_l2` |
+| 8 | `gen_l1_voltage` | `gen_l1_voltage` | `generator_voltage_l1` |
+| 9 | `gen_l2_voltage` | `gen_l2_voltage` | `generator_voltage_l2` |
 
 ### Current Registers (÷10 → A)
 
@@ -360,6 +362,19 @@ Mapping chain: Register → `read_scaled()` → `MidboxRuntimeData` field
 | 15 | `gen_l2_current` | `gen_l2_current` | `generator_current_l2` |
 | 16 | `ups_l1_current` | `ups_l1_current` | `ups_current_l1` |
 | 17 | `ups_l2_current` | `ups_l2_current` | `ups_current_l2` |
+| 18 | `smart_port1_l1_current` | `smart_port_1_l1_current` | `smart_load1_current_l1` |
+| 19 | `smart_port1_l2_current` | `smart_port_1_l2_current` | `smart_load1_current_l2` |
+| 20 | `smart_port2_l1_current` | `smart_port_2_l1_current` | `smart_load2_current_l1` |
+| 21 | `smart_port2_l2_current` | `smart_port_2_l2_current` | `smart_load2_current_l2` |
+| 22 | `smart_port3_l1_current` | `smart_port_3_l1_current` | `smart_load3_current_l1` |
+| 23 | `smart_port3_l2_current` | `smart_port_3_l2_current` | `smart_load3_current_l2` |
+| 24 | `smart_port4_l1_current` | `smart_port_4_l1_current` | `smart_load4_current_l1` |
+| 25 | `smart_port4_l2_current` | `smart_port_4_l2_current` | `smart_load4_current_l2` |
+
+> **Smart port current:** Like power registers, current registers always contain
+> actual measurements regardless of port mode. When a port is in AC Couple mode
+> (status=2), the coordinator remaps `smart_load{N}_current_l{1,2}` to
+> `ac_couple{N}_current_l{1,2}`. Modbus-only — no cloud API equivalent.
 
 ### Power Registers (signed, W, no scaling)
 
@@ -422,8 +437,12 @@ based on port status.
 > **Note:** L2 energy registers always read 0 in practice. Aggregate energy
 > sensors (e.g., `ups_today`, `load_today`) are computed by summing L1+L2 in pylxpweb.
 >
-> **Note:** Regs 50-51 are unused/unknown. Smart load daily energy starts at reg 52,
-> not 50. Confirmed by Cloud API ↔ Modbus comparison (issue #146).
+> **Note:** Regs 50-51 are likely generator energy today (L1/L2, ÷10 → kWh), based on
+> the EG4 cloud CSV export which places an `eGenDay` column between `eToUserDay` and
+> `eSmartLoad1Day`. On systems without a generator these registers are always 0, so
+> cloud API ↔ Modbus comparison cannot confirm. Smart load daily block confirmed to
+> start at reg 52 (issue #146). **Community verification needed**: if you have a
+> GridBOSS with an active generator, check whether regs 50-51 accumulate generator kWh.
 
 ### Lifetime Energy Registers (32-bit pairs, ÷10 → kWh)
 
@@ -440,8 +459,11 @@ based on port status.
 | 88-103 | `smart_load{1-4}_energy_total_l{1-2}` | `smart_load{N}_lifetime_l{P}` |
 | 104-118 | `ac_couple{1-4}_energy_total_l{1-2}` | `ac_couple{N}_lifetime_l{P}` |
 
-> **Note:** Regs 84-87 are unused/unknown. Smart load lifetime energy starts at reg 88,
-> not 84. Confirmed by Cloud API ↔ Modbus comparison (issue #146).
+> **Note:** Regs 84-87 are likely generator lifetime energy (two 32-bit pairs, L1/L2,
+> ÷10 → kWh), based on the EG4 cloud CSV export `eGenAll` column. On systems without
+> a generator these registers are always 0. Smart load lifetime confirmed to start at
+> reg 88 (issue #146). **Community verification needed**: check regs 84-85 (32-bit low+high)
+> on a system with accumulated generator kWh.
 >
 > **Warning:** Input registers 105-108 are the HIGH words of 32-bit AC couple
 > lifetime energy, NOT smart port status. See [Section 5](#5-gridboss-holding-register-20-smart-port-status).
@@ -643,7 +665,7 @@ Definitions: `pylxpweb/registers/battery.py`
 |--------|----------------|-------|------|---------------|
 | 1 | `battery_full_capacity` | 1 | Ah | `battery_full_capacity` |
 | 2 | `battery_charge_voltage_ref` | ÷10 | V | `battery_charge_voltage_ref` |
-| 3 | `battery_charge_current_limit` | ÷100 | A | `battery_max_charge_current` |
+| 3 | `battery_charge_current_limit` | ÷10 | A | `battery_max_charge_current` |
 | 6 | `battery_voltage` | ÷100 | V | `battery_real_voltage` |
 | 7 | `battery_current` | ÷10 | A | `battery_real_current` |
 | 8 (low) | `battery_soc` | 1 | % | `battery_rsoc` |
@@ -747,7 +769,6 @@ From `INVERTER_COMPUTED_KEYS` frozenset in `coordinator_mappings.py`:
 | HA Sensor Key | Computation | Where |
 |---------------|-------------|-------|
 | `consumption_power` | pylxpweb `inverter.consumption_power` (energy balance: PV + discharge + grid_import - charge - grid_export) | coordinator_local.py |
-| `total_load_power` | Aliased from consumption_power | coordinator_local.py |
 | `battery_power` | `charge_power - discharge_power` | coordinator_local.py |
 | `rectifier_power` | From register 17 (`grid_power`) — renamed for clarity | coordinator_local.py |
 | `grid_import_power` | From register 27 (`power_to_user`) | coordinator_local.py |
@@ -803,7 +824,7 @@ From `INVERTER_COMPUTED_KEYS` frozenset in `coordinator_mappings.py`:
 
 - **Data source**: Both LOCAL (Modbus for runtime) and CLOUD (API for supplemental)
 - **Priority**: LOCAL data preferred when available; CLOUD fills gaps
-- **Transport-exclusive overlay**: When local transport is attached, Modbus-only sensors are overlaid onto cloud data via `_TRANSPORT_OVERLAY` in `coordinator_mixins.py`: `bt_temperature`, `grid_current_l1/l2/l3`, `battery_current`, `total_load_power`
+- **Transport-exclusive overlay**: When local transport is attached, Modbus-only sensors are overlaid onto cloud data via `_TRANSPORT_OVERLAY` in `coordinator_mixins.py`: `bt_temperature`, `grid_current_l1/l2/l3`, `battery_current`
 - **GridBOSS overlay**: `apply_gridboss_overlay()` merges CT data onto parallel group
 - **Consumption**: Uses GridBOSS CT `load_power` when GridBOSS present
 
@@ -820,7 +841,6 @@ From `INVERTER_COMPUTED_KEYS` frozenset in `coordinator_mappings.py`:
 | `bt_temperature` | Yes | No | Yes (overlay) | Modbus reg 108 only |
 | `grid_current_l1/l2/l3` | Yes | No | Yes (overlay) | Modbus regs 18, 190, 191 |
 | `battery_current` (inverter) | Yes | No | Yes (overlay) | Modbus reg 4 (via `_transport_runtime`) |
-| `total_load_power` | Yes | API | Yes (overlay) | Aliased from consumption_power |
 | `consumption_power` (inverter) | Computed | API | API or computed | Energy balance vs API |
 | `consumption` (energy) | Computed | API (÷10) | API (÷10) | `_energy_balance()` vs `todayLoad` |
 | Smart port power | Modbus regs 34-41 | API fields | Both | Filtered by port status |
@@ -838,26 +858,34 @@ port entities based on port status from holding register 20 (LOCAL) or API (CLOU
 
 For each port (1-4), based on `smart_port{N}_status`:
 
-| Status | Smart Load Power Keys | AC Couple Power Keys | Energy Keys |
-|--------|----------------------|---------------------|-------------|
-| **0 (Unused)** | Removed | Removed | Removed |
-| **1 (Smart Load)** | `setdefault(key, 0.0)` | `sensors[key] = None` | Only smart_load energy |
-| **2 (AC Couple)** | `sensors[key] = None` | `setdefault(key, 0.0)` | Only ac_couple energy |
+| Status | Smart Load Keys | AC Couple Keys | Current Remap |
+|--------|----------------|----------------|---------------|
+| **0 (Unused)** | All removed | All removed | N/A |
+| **1 (Smart Load)** | Power: `setdefault(0.0)` | All removed | No remap |
+| **2 (AC Couple)** | All removed | Power: `setdefault(0.0)` | `smart_load{N}_current_l{1,2}` → `ac_couple{N}_current_l{1,2}` |
 
-- **Correct-type** sensors: Ensures key exists with real value or 0.0
-- **Wrong-type** sensors: Key set to `None` → entity shows as "Unknown" in HA
+- **Correct-type** power sensors: Ensures key exists with real value or 0.0
 - **Unused** ports: All keys removed → no entities created
+- **AC Couple current remap**: Current register values are always in `smart_load{N}` keys
+  from the mapping function; for AC couple ports, the filter pops the smart_load current
+  value and inserts it under the ac_couple current key
 
-### Power Keys Affected
+### Dynamic Keys Affected
 
-The 26 keys in `GRIDBOSS_SMART_PORT_POWER_KEYS`:
+The 58 keys in `GRIDBOSS_SMART_PORT_DYNAMIC_KEYS`:
 ```
-smart_load{1-4}_power_l{1-2}   (L1/L2 per-port)
-ac_couple{1-4}_power_l{1-2}    (L1/L2 per-port)
+smart_load{1-4}_power_l{1-2}   (L1/L2 per-port power)
+ac_couple{1-4}_power_l{1-2}    (L1/L2 per-port power)
 smart_load{1-4}_power           (per-port aggregate, computed by _calculate_gridboss_aggregates)
 ac_couple{1-4}_power            (per-port aggregate, computed by _calculate_gridboss_aggregates)
 smart_load_power                (total across all smart load ports)
 ac_couple_power                 (total across all AC couple ports)
+smart_load{1-4}_current_l{1-2}  (L1/L2 per-port RMS current, Modbus-only)
+ac_couple{1-4}_current_l{1-2}   (L1/L2 per-port RMS current, remapped from smart_load)
+smart_load{1-4}_today           (per-port energy today)
+smart_load{1-4}_total           (per-port energy lifetime)
+ac_couple{1-4}_today            (per-port energy today)
+ac_couple{1-4}_total            (per-port energy lifetime)
 ```
 
 **Aggregation behavior**: `_calculate_gridboss_aggregates()` runs AFTER the filter.
@@ -971,7 +999,7 @@ additional switch entities (cloud-only controls), and transport-exclusive sensor
 ### Known Discrepancies
 
 HYBRID has 10 more entities than CLOUD due to transport-exclusive sensors
-(`bt_temperature`, `battery_current`, `total_load_power`, `grid_current_l1/l2/l3`,
+(`bt_temperature`, `battery_current`, `grid_current_l1/l2/l3`,
 `transport_ip_address` per inverter). CLOUD has cloud-only command buttons not
 available in LOCAL mode.
 
@@ -989,8 +1017,8 @@ available in LOCAL mode.
 | `INVERTER_COMPUTED_KEYS` | 7 | Derived sensors (consumption, battery, EPS split) |
 | `INVERTER_METADATA_KEYS` | 4 | Firmware, transport, host, last_polled |
 | `ALL_INVERTER_SENSOR_KEYS` | 89 | Union of all above |
-| `GRIDBOSS_SENSOR_KEYS` | 65 | All GridBOSS sensor keys (incl. smart port, energy, metadata) |
-| `GRIDBOSS_SMART_PORT_POWER_KEYS` | 26 | Smart load + AC couple power (L1/L2 + aggregates + totals) |
+| `GRIDBOSS_SENSOR_KEYS` | 83 | All GridBOSS sensor keys (incl. smart port, energy, metadata) |
+| `GRIDBOSS_SMART_PORT_DYNAMIC_KEYS` | 58 | Smart load + AC couple power, current, and energy (L1/L2 power, L1/L2 current, per-port aggregates, per-port energy today/total, total aggregates) |
 | `PARALLEL_GROUP_SENSOR_KEYS` | 32 | PG power, energy, battery aggregates (incl. grid import/export, battery current) |
 | `PARALLEL_GROUP_GRIDBOSS_KEYS` | 5 | Additional keys from CT overlay |
 
@@ -1189,10 +1217,7 @@ Returns `None` when both voltages are zero (no EPS output).
 **Source:** `inverter.eps_power_l1` / `inverter.eps_power_l2` properties in
 pylxpweb. Set in `coordinator_local.py` `_build_local_device_data()`.
 
-#### `total_load_power` (Inverter)
 
-Alias for `consumption_power`. Same value, different sensor key for
-backward compatibility.
 
 #### `rectifier_power` (Inverter)
 

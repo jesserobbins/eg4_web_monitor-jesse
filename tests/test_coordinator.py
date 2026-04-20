@@ -39,9 +39,13 @@ from custom_components.eg4_web_monitor.coordinator import (
 )
 from custom_components.eg4_web_monitor.coordinator_mappings import (
     ALL_INVERTER_SENSOR_KEYS,
+    BATTERY_BANK_CAN_DIAGNOSTIC_KEYS,
+    BATTERY_BANK_CORE_KEYS,
     BATTERY_BANK_KEYS,
+    GRIDBOSS_COORDINATOR_INTERNAL_KEYS,
     GRIDBOSS_SENSOR_KEYS,
-    GRIDBOSS_SMART_PORT_POWER_KEYS,
+    GRIDBOSS_SMART_PORT_DYNAMIC_KEYS,
+    GRIDBOSS_STATIC_ENTITY_KEYS,
     INVERTER_ENERGY_KEYS,
     INVERTER_RUNTIME_KEYS,
     PARALLEL_GROUP_GRIDBOSS_KEYS,
@@ -373,6 +377,83 @@ class TestCoordinatorCleanup:
         # Verify client has close method
         assert hasattr(coordinator.client, "close")
         assert callable(coordinator.client.close)
+
+    async def test_async_shutdown_calls_super(self, hass, mock_config_entry):
+        """Test async_shutdown sets _shutdown_requested via super().
+
+        HA core's DataUpdateCoordinator.async_shutdown() sets
+        _shutdown_requested = True and unsubscribes the refresh timer.
+        Our override must call super() so the base class cleanup runs.
+        Without this, in-flight refresh tasks are never notified of
+        shutdown, causing unload timeouts (stuck in Initialising).
+        """
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        # Before shutdown, flag should be False
+        assert not coordinator._shutdown_requested
+
+        await coordinator.async_shutdown()
+
+        # After shutdown, base class must have set the flag
+        assert coordinator._shutdown_requested
+
+    async def test_async_shutdown_disconnects_cached_transports(
+        self, hass, mock_config_entry
+    ):
+        """Test async_shutdown disconnects transports on cached inverters/MID devices.
+
+        In LOCAL/HYBRID mode, transports are attached to inverter objects
+        in _inverter_cache and MID devices in _mid_device_cache.  These
+        must be disconnected during shutdown so that any in-flight
+        asyncio.gather() on transport I/O unblocks quickly.
+        """
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        # Simulate cached inverter with an open transport
+        mock_transport_1 = MagicMock()
+        mock_transport_1.is_connected = True
+        mock_transport_1.disconnect = AsyncMock()
+        mock_inv = MagicMock()
+        mock_inv._transport = mock_transport_1
+        coordinator._inverter_cache["INV001"] = mock_inv
+
+        # Simulate cached MID device with an open transport
+        mock_transport_2 = MagicMock()
+        mock_transport_2.is_connected = True
+        mock_transport_2.disconnect = AsyncMock()
+        mock_mid = MagicMock()
+        mock_mid._transport = mock_transport_2
+        coordinator._mid_device_cache["MID001"] = mock_mid
+
+        await coordinator.async_shutdown()
+
+        mock_transport_1.disconnect.assert_awaited_once()
+        mock_transport_2.disconnect.assert_awaited_once()
+
+    async def test_async_shutdown_disconnects_legacy_transports(
+        self, hass, mock_config_entry
+    ):
+        """Test async_shutdown disconnects legacy _modbus_transport/_dongle_transport.
+
+        Old single-device config entries store transports on the coordinator
+        directly.  These must also be disconnected during shutdown.
+        """
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        mock_modbus = MagicMock()
+        mock_modbus.is_connected = True
+        mock_modbus.disconnect = AsyncMock()
+        coordinator._modbus_transport = mock_modbus
+
+        mock_dongle = MagicMock()
+        mock_dongle.is_connected = True
+        mock_dongle.disconnect = AsyncMock()
+        coordinator._dongle_transport = mock_dongle
+
+        await coordinator.async_shutdown()
+
+        mock_modbus.disconnect.assert_awaited_once()
+        mock_dongle.disconnect.assert_awaited_once()
 
 
 class TestDeviceInfo:
@@ -982,12 +1063,12 @@ class TestParallelGroupAggregation:
         processed["devices"]["GB001"] = {
             "type": "gridboss",
             "sensors": {
-                "smart_port1_status": 2,  # AC Couple mode
+                "smart_port1_status": "ac_couple",  # AC Couple mode (string label from _filter_unused_smart_port_sensors)
                 "ac_couple1_power_l1": 1500.0,
                 "ac_couple1_power_l2": 1200.0,
-                "smart_port2_status": 0,  # Unused
-                "smart_port3_status": 0,
-                "smart_port4_status": 0,
+                "smart_port2_status": "unused",
+                "smart_port3_status": "unused",
+                "smart_port4_status": "unused",
                 "load_power": 3000.0,
             },
         }
@@ -1099,7 +1180,6 @@ class TestDeferredLocalParameters:
         mock_inverter._transport_energy = None
         mock_inverter._transport_battery = None
         mock_inverter.consumption_power = None
-        mock_inverter.total_load_power = None
         mock_inverter.battery_power = None
         mock_inverter.rectifier_power = None
         mock_inverter.power_to_user = None
@@ -1143,7 +1223,6 @@ class TestDeferredLocalParameters:
         mock_inverter._transport_energy = None
         mock_inverter._transport_battery = None
         mock_inverter.consumption_power = None
-        mock_inverter.total_load_power = None
         mock_inverter.battery_power = None
         mock_inverter.rectifier_power = None
         mock_inverter.power_to_user = None
@@ -1335,7 +1414,6 @@ class TestCacheTTLAdherence:
         mock_inverter._transport_energy = None
         mock_inverter._transport_battery = None
         mock_inverter.consumption_power = None
-        mock_inverter.total_load_power = None
         mock_inverter.battery_power = None
         mock_inverter.rectifier_power = None
         mock_inverter.power_to_user = None
@@ -1500,15 +1578,17 @@ class TestStaticLocalData:
         result = await coordinator._async_update_local_data()
         sensors = result["devices"]["GB001"]["sensors"]
 
-        # Every key from GRIDBOSS_SENSOR_KEYS except smart port power keys
-        # should be present — smart port power keys are added dynamically
+        # Every key from GRIDBOSS_SENSOR_KEYS except smart port dynamic keys
+        # (power + energy) should be present — they are added dynamically
         # by _filter_unused_smart_port_sensors() based on actual port status.
-        static_keys = GRIDBOSS_SENSOR_KEYS - GRIDBOSS_SMART_PORT_POWER_KEYS
+        static_keys = GRIDBOSS_STATIC_ENTITY_KEYS
         for key in static_keys:
             assert key in sensors, f"Missing GridBOSS sensor key: {key}"
-        for key in GRIDBOSS_SMART_PORT_POWER_KEYS:
+        for key in (
+            GRIDBOSS_SMART_PORT_DYNAMIC_KEYS | GRIDBOSS_COORDINATOR_INTERNAL_KEYS
+        ):
             assert key not in sensors, (
-                f"Smart port power key should not be in static data: {key}"
+                f"Dynamic/internal key should not be in static data: {key}"
             )
 
         # GridBOSS device should have binary_sensors dict
@@ -1548,9 +1628,9 @@ class TestStaticLocalData:
         assert result["devices"]["INV002"]["type"] == "inverter"
         assert result["devices"]["parallel_group_a"]["type"] == "parallel_group"
 
-        # GridBOSS should use GRIDBOSS_SENSOR_KEYS minus smart port power keys
+        # GridBOSS should use GRIDBOSS_SENSOR_KEYS minus smart port dynamic keys
         gb_keys = set(result["devices"]["GB001"]["sensors"].keys())
-        static_keys = GRIDBOSS_SENSOR_KEYS - GRIDBOSS_SMART_PORT_POWER_KEYS
+        static_keys = GRIDBOSS_STATIC_ENTITY_KEYS
         assert static_keys.issubset(gb_keys)
 
         # Inverters should use ALL_INVERTER_SENSOR_KEYS
@@ -1665,12 +1745,23 @@ class TestStaticLocalData:
             "transport_host",
         }
 
-        # All mapping keys must be in the constant
-        assert mapping_keys.issubset(GRIDBOSS_SENSOR_KEYS), (
-            f"Mapping has keys not in GRIDBOSS_SENSOR_KEYS: "
-            f"{mapping_keys - GRIDBOSS_SENSOR_KEYS}"
+        # Dynamic smart port keys are conditionally created at runtime
+        # (filtered by _filter_unused_smart_port_sensors), so they live in
+        # GRIDBOSS_SMART_PORT_DYNAMIC_KEYS rather than GRIDBOSS_SENSOR_KEYS.
+        # Coordinator-internal keys (smart_port*_status) live in the sensors
+        # dict for select entity state but never become HA sensor entities.
+        allowed_keys = (
+            GRIDBOSS_SENSOR_KEYS
+            | GRIDBOSS_SMART_PORT_DYNAMIC_KEYS
+            | GRIDBOSS_COORDINATOR_INTERNAL_KEYS
         )
-        # The only extra keys in the constant should be the metadata keys
+
+        # All mapping keys must be in the combined set
+        assert mapping_keys.issubset(allowed_keys), (
+            f"Mapping has keys not in any GRIDBOSS key set: "
+            f"{mapping_keys - allowed_keys}"
+        )
+        # The only extra keys in the static constant should be the metadata keys
         extra = GRIDBOSS_SENSOR_KEYS - mapping_keys
         assert extra == gridboss_metadata, (
             f"Unexpected extra keys in GRIDBOSS_SENSOR_KEYS: "
@@ -3453,14 +3544,19 @@ class TestMappingKeyConsistency:
     """
 
     def test_gridboss_local_keys_subset_of_static(self):
-        """LOCAL _build_gridboss_sensor_mapping() keys ⊆ GRIDBOSS_SENSOR_KEYS."""
+        """LOCAL _build_gridboss_sensor_mapping() keys ⊆ static + dynamic sets."""
         # Create a mock MID device where every attribute returns a sentinel
         mock_mid = MagicMock()
         sensors = _build_gridboss_sensor_mapping(mock_mid)
         local_keys = set(sensors.keys())
-        unknown = local_keys - GRIDBOSS_SENSOR_KEYS
+        allowed = (
+            GRIDBOSS_SENSOR_KEYS
+            | GRIDBOSS_SMART_PORT_DYNAMIC_KEYS
+            | GRIDBOSS_COORDINATOR_INTERNAL_KEYS
+        )
+        unknown = local_keys - allowed
         assert not unknown, (
-            f"LOCAL GridBOSS keys not in GRIDBOSS_SENSOR_KEYS: {sorted(unknown)}"
+            f"LOCAL GridBOSS keys not in any GRIDBOSS key set: {sorted(unknown)}"
         )
 
     def test_gridboss_http_values_within_known_keys(self):
@@ -3498,10 +3594,16 @@ class TestMappingKeyConsistency:
 
         property_map = DeviceProcessingMixin._get_mid_device_property_map()
         http_keys = set(property_map.values())
-        unknown = http_keys - GRIDBOSS_SENSOR_KEYS - http_only_keys
+        allowed = (
+            GRIDBOSS_SENSOR_KEYS
+            | GRIDBOSS_SMART_PORT_DYNAMIC_KEYS
+            | GRIDBOSS_COORDINATOR_INTERNAL_KEYS
+            | http_only_keys
+        )
+        unknown = http_keys - allowed
         assert not unknown, (
-            f"HTTP GridBOSS sensor keys not in GRIDBOSS_SENSOR_KEYS or "
-            f"known HTTP-only set: {sorted(unknown)}"
+            f"HTTP GridBOSS sensor keys not in any GRIDBOSS key set or HTTP-only set: "
+            f"{sorted(unknown)}"
         )
 
     def test_gridboss_local_and_http_share_core_keys(self):
@@ -3977,7 +4079,6 @@ class TestParameterPreComputation:
             mock_inv._transport_energy = None
             mock_inv._transport_battery = None
             mock_inv.consumption_power = None
-            mock_inv.total_load_power = None
             mock_inv.battery_power = None
             mock_inv.rectifier_power = None
             mock_inv.power_to_user = None
@@ -4061,7 +4162,6 @@ class TestParameterPreComputation:
         mock_inv._transport_energy = None
         mock_inv._transport_battery = None
         mock_inv.consumption_power = None
-        mock_inv.total_load_power = None
         mock_inv.battery_power = None
         mock_inv.rectifier_power = None
         mock_inv.power_to_user = None
@@ -4138,11 +4238,11 @@ class TestBatteryBankCurrentKey:
         assert prop_map["current"] == "battery_bank_current"
 
 
-class TestBatteryBankBMSFallback:
-    """Test BMS fallback sensors appear in mapping when batteries=[]."""
+class TestBatteryBankBMSCoreKeys:
+    """Test BMS CORE keys always present in mapping from bank-level registers."""
 
-    def test_build_mapping_includes_fallback_sensors(self):
-        """3 diagnostic keys present via bank-level BMS fallback."""
+    def test_build_mapping_includes_bms_core_sensors(self):
+        """BMS CORE keys present in mapping even without CAN bus data."""
         mock_battery = MagicMock()
         mock_battery.soc = 85
         mock_battery.voltage = 52.0
@@ -4157,27 +4257,144 @@ class TestBatteryBankBMSFallback:
         mock_battery.capacity_percent = 85
         mock_battery.battery_count = 4
         mock_battery.status = "charging"
-        # Unfixable diagnostics return None (need individual batteries)
+        # CAN-dependent diagnostics return None (need individual batteries)
         mock_battery.soc_delta = None
-        mock_battery.min_soh = None
         mock_battery.soh_delta = None
         mock_battery.voltage_delta = None
         mock_battery.cycle_count_delta = None
-        # BMS fallback diagnostics return values (bank-level registers)
+        # Bank-level BMS registers (always available, CORE keys)
+        mock_battery.min_soh = 100
         mock_battery.max_cell_temp = 35.0
         mock_battery.temp_delta = 5.5
         mock_battery.cell_voltage_delta_max = 0.050
+        mock_battery.cycle_count = 53
 
         result = _build_battery_bank_sensor_mapping(mock_battery)
+        # BMS CORE keys always present
+        assert "battery_bank_min_soh" in result
+        assert result["battery_bank_min_soh"] == 100
         assert "battery_bank_max_cell_temp" in result
         assert result["battery_bank_max_cell_temp"] == 35.0
         assert "battery_bank_temp_delta" in result
         assert result["battery_bank_temp_delta"] == 5.5
         assert "battery_bank_cell_voltage_delta_max" in result
         assert result["battery_bank_cell_voltage_delta_max"] == 0.050
-        # Unfixable diagnostics should NOT be present (None filtered)
+        assert "battery_bank_cycle_count" in result
+        assert result["battery_bank_cycle_count"] == 53
+        # CAN-dependent diagnostics should NOT be present (None filtered)
         assert "battery_bank_soc_delta" not in result
-        assert "battery_bank_min_soh" not in result
+        assert "battery_bank_soh_delta" not in result
+        assert "battery_bank_voltage_delta" not in result
+        assert "battery_bank_cycle_count_delta" not in result
+
+
+class TestBatteryBankCANDiagnosticSuppression:
+    """CAN-dependent diagnostic sensors excluded from static entity creation.
+
+    Sensors like soc_delta, soh_delta, voltage_delta, and
+    cycle_count_delta require individual battery data from CAN bus
+    registers (5002+).  They must NOT be in ALL_INVERTER_SENSOR_KEYS
+    so that _build_static_local_data() doesn't pre-create entities
+    that will be permanently Unavailable.
+
+    Bank-level BMS sensors (min_soh, cycle_count, max_cell_temp, etc.)
+    are CORE keys — always available from input registers 80-107.
+    """
+
+    def test_can_diagnostic_keys_not_in_static_set(self):
+        """CAN diagnostic keys must not be in ALL_INVERTER_SENSOR_KEYS."""
+        for key in BATTERY_BANK_CAN_DIAGNOSTIC_KEYS:
+            assert key not in ALL_INVERTER_SENSOR_KEYS, (
+                f"{key} should not be in static creation set"
+            )
+
+    def test_core_keys_in_static_set(self):
+        """Core battery bank keys must be in ALL_INVERTER_SENSOR_KEYS."""
+        for key in BATTERY_BANK_CORE_KEYS:
+            assert key in ALL_INVERTER_SENSOR_KEYS, (
+                f"{key} should be in static creation set"
+            )
+
+    def test_full_union_unchanged(self):
+        """BATTERY_BANK_KEYS is still the full union of core + CAN keys."""
+        assert (
+            BATTERY_BANK_KEYS
+            == BATTERY_BANK_CORE_KEYS | BATTERY_BANK_CAN_DIAGNOSTIC_KEYS
+        )
+
+    def test_no_overlap(self):
+        """Core and CAN diagnostic key sets must not overlap."""
+        overlap = BATTERY_BANK_CORE_KEYS & BATTERY_BANK_CAN_DIAGNOSTIC_KEYS
+        assert not overlap, f"Overlapping keys: {overlap}"
+
+    def test_can_keys_added_dynamically_when_data_present(self):
+        """CAN diagnostic keys appear in mapping when individual battery data exists."""
+        mock_battery = MagicMock()
+        mock_battery.soc = 85
+        mock_battery.voltage = 52.0
+        mock_battery.current = 15.5
+        mock_battery.charge_power = 800.0
+        mock_battery.discharge_power = 0.0
+        mock_battery.battery_power = 800.0
+        mock_battery.max_capacity = 200
+        mock_battery.current_capacity = 170
+        mock_battery.remain_capacity = 170
+        mock_battery.full_capacity = 200
+        mock_battery.capacity_percent = 85
+        mock_battery.battery_count = 3
+        mock_battery.status = "charging"
+        # CAN-dependent diagnostics return values
+        mock_battery.soc_delta = 2
+        mock_battery.min_soh = 95
+        mock_battery.soh_delta = 3
+        mock_battery.voltage_delta = 0.15
+        mock_battery.cycle_count_delta = 10
+        # BMS fallbacks also present
+        mock_battery.max_cell_temp = 30.0
+        mock_battery.temp_delta = 2.0
+        mock_battery.cell_voltage_delta_max = 0.03
+
+        result = _build_battery_bank_sensor_mapping(mock_battery)
+        for key in BATTERY_BANK_CAN_DIAGNOSTIC_KEYS:
+            assert key in result, f"{key} should be in mapping when CAN data present"
+
+    def test_can_keys_absent_when_no_individual_batteries(self):
+        """CAN diagnostic keys absent from mapping when no CAN bus data."""
+        mock_battery = MagicMock()
+        mock_battery.soc = 85
+        mock_battery.voltage = 52.0
+        mock_battery.current = 15.5
+        mock_battery.charge_power = 800.0
+        mock_battery.discharge_power = 0.0
+        mock_battery.battery_power = 800.0
+        mock_battery.max_capacity = 200
+        mock_battery.current_capacity = 170
+        mock_battery.remain_capacity = 170
+        mock_battery.full_capacity = 200
+        mock_battery.capacity_percent = 85
+        mock_battery.battery_count = 3
+        mock_battery.status = "Idle"
+        # No CAN data — all cross-battery diagnostics return None
+        mock_battery.soc_delta = None
+        mock_battery.soh_delta = None
+        mock_battery.voltage_delta = None
+        mock_battery.cycle_count_delta = None
+        # Bank-level BMS sensors still available (CORE keys)
+        mock_battery.min_soh = 100
+        mock_battery.max_cell_temp = 28.0
+        mock_battery.temp_delta = 1.5
+        mock_battery.cell_voltage_delta_max = 0.01
+        mock_battery.cycle_count = 53
+
+        result = _build_battery_bank_sensor_mapping(mock_battery)
+        for key in BATTERY_BANK_CAN_DIAGNOSTIC_KEYS:
+            assert key not in result, f"{key} should NOT be in mapping without CAN data"
+        # Bank-level BMS sensors (CORE keys) should always be present
+        assert "battery_bank_min_soh" in result
+        assert "battery_bank_max_cell_temp" in result
+        assert "battery_bank_temp_delta" in result
+        assert "battery_bank_cell_voltage_delta_max" in result
+        assert "battery_bank_cycle_count" in result
 
 
 class TestParallelGroupGridPowerKeys:
@@ -4190,6 +4407,150 @@ class TestParallelGroupGridPowerKeys:
     def test_grid_export_power_in_parallel_group_keys(self):
         """grid_export_power must be in PARALLEL_GROUP_SENSOR_KEYS."""
         assert "grid_export_power" in PARALLEL_GROUP_SENSOR_KEYS
+
+
+class TestParallelGroupConsumptionEnergyBalance:
+    """Test PG consumption override with energy balance when transport attached.
+
+    Issue #163: In hybrid mode without GridBOSS, _compute_energy_from_inverters()
+    sums load_energy_today (actually AC charge energy reg 32), producing wrong
+    consumption values.  The coordinator overrides PG consumption with energy
+    balance: yield + discharge + import - charge - export.
+    """
+
+    @pytest.fixture
+    def hybrid_entry(self, hass):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            title="EG4 - Hybrid PG Test",
+            data={
+                CONF_USERNAME: "test",
+                CONF_PASSWORD: "test",
+                CONF_PLANT_ID: "888",
+                CONF_PLANT_NAME: "PG Test",
+                CONF_BASE_URL: "https://test.example.com",
+                CONF_CONNECTION_TYPE: CONNECTION_TYPE_HYBRID,
+                CONF_VERIFY_SSL: True,
+                CONF_HTTP_POLLING_INTERVAL: DEFAULT_HTTP_POLLING_INTERVAL,
+                CONF_DST_SYNC: False,
+                CONF_LIBRARY_DEBUG: False,
+                CONF_LOCAL_TRANSPORTS: [],
+            },
+            entry_id="pg_consumption_test",
+        )
+        entry.add_to_hass(hass)
+        return entry
+
+    @pytest.mark.asyncio
+    async def test_pg_consumption_overridden_when_transport_attached(
+        self, hass, hybrid_entry
+    ):
+        """PG consumption uses energy balance when inverters have local transport."""
+        coordinator = EG4DataUpdateCoordinator(hass, hybrid_entry)
+
+        mock_group = MagicMock()
+        mock_group.name = "A"
+        mock_group.inverters = [MagicMock(serial_number="INV001")]
+        mock_group.mid_device = None
+
+        # Simulate _has_local_energy() = True  →  wrong consumption from pylxpweb
+        mock_group.today_usage = 5.0  # Wrong: AC charge energy
+        mock_group.total_usage = 500.0  # Wrong: AC charge energy lifetime
+
+        # Correct energy values from pylxpweb properties
+        mock_group.today_yielding = 30.0
+        mock_group.today_charging = 5.0
+        mock_group.today_discharging = 10.0
+        mock_group.today_import = 20.0
+        mock_group.today_export = 8.0
+
+        mock_group.total_yielding = 3000.0
+        mock_group.total_charging = 500.0
+        mock_group.total_discharging = 1000.0
+        mock_group.total_import = 2000.0
+        mock_group.total_export = 800.0
+
+        # Other properties the property map expects
+        mock_group.pv_total_power = 4500
+        mock_group.inverter_power = 3800
+        mock_group.grid_power = -200
+        mock_group.grid_import_power = 0
+        mock_group.grid_export_power = 200
+        mock_group.consumption_power = 3600
+        mock_group.eps_power = 0
+        mock_group.battery_power = -500
+        mock_group.battery_soc = 75
+        mock_group.battery_max_capacity = 560
+        mock_group.battery_current_capacity = 420.0
+        mock_group.battery_voltage = 53.2
+        mock_group.battery_count = 6
+        mock_group.first_device_serial = "INV001"
+
+        # Mark inverters as having local transport
+        for inv in mock_group.inverters:
+            inv._transport_energy = MagicMock()
+
+        result = await coordinator._process_parallel_group_object(mock_group)
+        sensors = result["sensors"]
+
+        # Energy balance: 30+10+20-5-8 = 47.0 kWh
+        assert sensors["consumption"] == pytest.approx(47.0)
+        # Lifetime: 3000+1000+2000-500-800 = 4700.0 kWh
+        assert sensors["consumption_lifetime"] == pytest.approx(4700.0)
+
+    @pytest.mark.asyncio
+    async def test_pg_consumption_not_overridden_without_transport(
+        self, hass, hybrid_entry
+    ):
+        """PG consumption unchanged when no transport (cloud-only path)."""
+        coordinator = EG4DataUpdateCoordinator(hass, hybrid_entry)
+
+        mock_group = MagicMock()
+        mock_group.name = "A"
+        mock_group.inverters = [MagicMock(serial_number="INV001")]
+        mock_group.mid_device = None
+
+        # Cloud API provides correct consumption
+        mock_group.today_usage = 45.0  # Correct from cloud
+        mock_group.total_usage = 4500.0
+
+        mock_group.today_yielding = 30.0
+        mock_group.today_charging = 5.0
+        mock_group.today_discharging = 10.0
+        mock_group.today_import = 20.0
+        mock_group.today_export = 8.0
+
+        mock_group.total_yielding = 3000.0
+        mock_group.total_charging = 500.0
+        mock_group.total_discharging = 1000.0
+        mock_group.total_import = 2000.0
+        mock_group.total_export = 800.0
+
+        mock_group.pv_total_power = 4500
+        mock_group.inverter_power = 3800
+        mock_group.grid_power = -200
+        mock_group.grid_import_power = 0
+        mock_group.grid_export_power = 200
+        mock_group.consumption_power = 3600
+        mock_group.eps_power = 0
+        mock_group.battery_power = -500
+        mock_group.battery_soc = 75
+        mock_group.battery_max_capacity = 560
+        mock_group.battery_current_capacity = 420.0
+        mock_group.battery_voltage = 53.2
+        mock_group.battery_count = 6
+        mock_group.first_device_serial = "INV001"
+
+        # No transport attached
+        for inv in mock_group.inverters:
+            inv._transport_energy = None
+
+        result = await coordinator._process_parallel_group_object(mock_group)
+        sensors = result["sensors"]
+
+        # Cloud values should pass through unchanged
+        assert sensors["consumption"] == pytest.approx(45.0)
+        assert sensors["consumption_lifetime"] == pytest.approx(4500.0)
 
 
 class TestDataValidationFlag:
@@ -4287,7 +4648,6 @@ class TestHybridTransportExclusiveSensors:
         mock_runtime.inverter_rms_current_t = 4.1
         mock_runtime.battery_current = 12.5
         mock_inverter._transport_runtime = mock_runtime
-        mock_inverter.total_load_power = 2500.0
 
         result = await coordinator._process_inverter_object(mock_inverter)
         sensors = result["sensors"]
@@ -4297,7 +4657,6 @@ class TestHybridTransportExclusiveSensors:
         assert sensors["grid_current_l2"] == 4.3
         assert sensors["grid_current_l3"] == 4.1
         assert sensors["battery_current"] == 12.5
-        assert sensors["total_load_power"] == 2500.0
 
     async def test_no_transport_runtime_skips_overlay(self, hass, mock_config_entry):
         """Without _transport_runtime, overlay is skipped entirely."""
@@ -4318,7 +4677,7 @@ class TestHybridTransportExclusiveSensors:
         sensors = result["sensors"]
 
         # Verify the transport overlay path didn't run (no _transport_runtime)
-        assert "total_load_power" not in sensors
+        assert "bt_temperature" not in sensors
 
     async def test_transport_runtime_none_values_not_overlaid(
         self, hass, mock_config_entry
@@ -4343,14 +4702,12 @@ class TestHybridTransportExclusiveSensors:
         mock_runtime.inverter_rms_current_t = None
         mock_runtime.battery_current = None
         mock_inverter._transport_runtime = mock_runtime
-        mock_inverter.total_load_power = None
 
         result = await coordinator._process_inverter_object(mock_inverter)
         sensors = result["sensors"]
 
         # Only non-None values from transport overlay should appear
         assert sensors["grid_current_l1"] == 4.5
-        assert "total_load_power" not in sensors
 
 
 class TestHybridParallelBatteryCountOverride:
@@ -5035,3 +5392,267 @@ class TestTotalIncreasingKeysConstant:
         assert "frequency" not in _TOTAL_INCREASING_KEYS
         assert "battery_soc" not in _TOTAL_INCREASING_KEYS
         assert "battery_voltage" not in _TOTAL_INCREASING_KEYS
+
+
+class TestRoundRobinTruncatedSerialGuard:
+    """Test that truncated battery serials are skipped entirely.
+
+    Firmware CAN bus register reads can return incomplete serial data
+    (e.g. "Batter" instead of "Battery_ID_03") due to partial register
+    transfers mid-rotation.  Truncated serials (< 10 chars) are skipped;
+    the real battery will appear with its full serial on a future cycle.
+    (#165)
+    """
+
+    @staticmethod
+    def _make_battery(
+        serial: str,
+        voltage: float = 53.0,
+        soc: int = 96,
+        index: int = 0,
+    ) -> MagicMock:
+        """Build a mock BatteryData with all attributes for mapping."""
+        batt = MagicMock()
+        batt.serial_number = serial
+        batt.voltage = voltage
+        batt.soc = soc
+        batt.battery_index = index
+        batt.current = -5.0
+        batt.power = -260.0
+        batt.soh = 100
+        batt.max_cell_temperature = 26.0
+        batt.min_cell_temperature = 24.0
+        batt.max_cell_num_temp = 1
+        batt.min_cell_num_temp = 3
+        batt.max_cell_voltage = 3.35
+        batt.min_cell_voltage = 3.30
+        batt.max_cell_num_voltage = 2
+        batt.min_cell_num_voltage = 8
+        batt.cell_voltage_delta = 0.05
+        batt.cell_temp_delta = 2.0
+        batt.remaining_capacity = 96.0
+        batt.max_capacity = 100.0
+        batt.capacity_percent = 96.0
+        batt.charge_current_limit = 50.0
+        batt.charge_voltage_ref = 56.0
+        batt.cycle_count = 50
+        batt.firmware_version = "1.0"
+        batt.battery_type = None
+        batt.battery_type_text = None
+        batt.model = "EG4-LL"
+        return batt
+
+    async def test_truncated_serial_skipped(self, hass, mock_config_entry):
+        """A truncated serial is skipped, not cached as a phantom entry."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+        serial = "INV001"
+
+        # First poll: full serial
+        batteries_1 = [self._make_battery("Battery_ID_05", index=0)]
+        result_1 = coordinator._merge_round_robin_batteries(serial, batteries_1)
+        assert len(result_1) == 1
+
+        # Second poll: truncated serial "Batter" — should be skipped
+        batteries_2 = [self._make_battery("Batter", index=0)]
+        result_2 = coordinator._merge_round_robin_batteries(serial, batteries_2)
+
+        # Still 1 battery (truncated was skipped, cached entry preserved)
+        assert len(result_2) == 1
+        key_map = coordinator._battery_serial_to_key[serial]
+        assert "Batter" not in key_map
+        assert "Battery_ID_05" in key_map
+
+    async def test_truncated_serial_before_full_also_skipped(
+        self, hass, mock_config_entry
+    ):
+        """A truncated serial arriving before any full serial is still skipped."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+        serial = "INV001"
+
+        # First poll: only truncated serial
+        batteries = [self._make_battery("Batter", index=0)]
+        result = coordinator._merge_round_robin_batteries(serial, batteries)
+
+        # Skipped — no entries created
+        assert len(result) == 0
+        key_map = coordinator._battery_serial_to_key[serial]
+        assert "Batter" not in key_map
+
+    async def test_fragment_serial_also_skipped(self, hass, mock_config_entry):
+        """A mid-string fragment like 'y_ID_03' is also skipped."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+        serial = "INV001"
+
+        batteries = [self._make_battery("y_ID_03", index=2)]
+        result = coordinator._merge_round_robin_batteries(serial, batteries)
+
+        assert len(result) == 0
+        key_map = coordinator._battery_serial_to_key[serial]
+        assert "y_ID_03" not in key_map
+
+    async def test_full_length_serial_not_affected(self, hass, mock_config_entry):
+        """Serials >= _MIN_SERIAL_LENGTH are always cached normally."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+        serial = "INV001"
+
+        batteries = [
+            self._make_battery("Battery_ID_05", index=0),
+            self._make_battery("Battery_ID_10", index=1),
+        ]
+        result = coordinator._merge_round_robin_batteries(serial, batteries)
+        assert len(result) == 2
+
+    async def test_repeated_truncated_never_accumulates(self, hass, mock_config_entry):
+        """Repeated truncated reads never create phantom entries."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+        serial = "INV001"
+
+        # Discover one real battery
+        batteries_1 = [self._make_battery("Battery_ID_05", index=0)]
+        coordinator._merge_round_robin_batteries(serial, batteries_1)
+
+        # Three polls with truncated versions — all skipped
+        for _ in range(3):
+            batteries = [self._make_battery("Batter", index=0)]
+            result = coordinator._merge_round_robin_batteries(serial, batteries)
+            assert len(result) == 1  # only the original real battery
+
+
+class TestResolveLocalFirmware:
+    """Test _resolve_local_firmware() local-register-preferred firmware resolution."""
+
+    async def test_no_transport_returns_cloud_version(self, hass, mock_config_entry):
+        """Without a local transport, cloud version is returned unchanged."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        device = MagicMock()
+        device.serial_number = "INV001"
+        del device._transport  # no transport
+
+        result = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
+        assert result == "CLOUD-1.0"
+        assert "INV001" not in coordinator._firmware_cache
+
+    async def test_cache_hit_returns_cached_value(self, hass, mock_config_entry):
+        """Cached firmware is returned without reading transport."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+        coordinator._firmware_cache["INV001"] = "LOCAL-2.0"
+
+        device = MagicMock()
+        device.serial_number = "INV001"
+        device._transport = MagicMock()
+        device._transport.read_firmware_version = AsyncMock()
+
+        result = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
+        assert result == "LOCAL-2.0"
+        device._transport.read_firmware_version.assert_not_called()
+
+    async def test_sentinel_cache_hit_returns_cloud_version(
+        self, hass, mock_config_entry
+    ):
+        """Empty-string sentinel in cache returns cloud version as fallback."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+        coordinator._firmware_cache["INV001"] = ""
+
+        device = MagicMock()
+        device.serial_number = "INV001"
+        device._transport = MagicMock()
+
+        result = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
+        assert result == "CLOUD-1.0"
+
+    async def test_successful_read_caches_and_returns_local(
+        self, hass, mock_config_entry
+    ):
+        """Successful transport read is cached and returned."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        device = MagicMock()
+        device.serial_number = "INV001"
+        device._transport = MagicMock()
+        device._transport.read_firmware_version = AsyncMock(return_value="FAAB-2525")
+
+        result = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
+        assert result == "FAAB-2525"
+        assert coordinator._firmware_cache["INV001"] == "FAAB-2525"
+
+    async def test_transport_without_read_method_caches_sentinel(
+        self, hass, mock_config_entry
+    ):
+        """Transport lacking read_firmware_version permanently caches sentinel."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        device = MagicMock()
+        device.serial_number = "INV001"
+        device._transport = MagicMock(spec=[])  # no methods at all
+
+        result = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
+        assert result == "CLOUD-1.0"
+        assert coordinator._firmware_cache["INV001"] == ""
+
+    async def test_transient_failure_does_not_cache_sentinel(
+        self, hass, mock_config_entry
+    ):
+        """Exception during read does NOT cache sentinel — allows retry."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        device = MagicMock()
+        device.serial_number = "INV001"
+        device._transport = MagicMock()
+        device._transport.read_firmware_version = AsyncMock(
+            side_effect=OSError("bus stall")
+        )
+
+        result = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
+        assert result == "CLOUD-1.0"
+        # No sentinel cached — next cycle will retry
+        assert "INV001" not in coordinator._firmware_cache
+
+    async def test_retry_succeeds_after_transient_failure(
+        self, hass, mock_config_entry
+    ):
+        """After a transient failure, next call succeeds and caches."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        device = MagicMock()
+        device.serial_number = "INV001"
+        device._transport = MagicMock()
+        device._transport.read_firmware_version = AsyncMock(
+            side_effect=OSError("bus stall")
+        )
+
+        # First call fails
+        result1 = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
+        assert result1 == "CLOUD-1.0"
+        assert "INV001" not in coordinator._firmware_cache
+
+        # Second call succeeds
+        device._transport.read_firmware_version = AsyncMock(return_value="FAAB-2525")
+        result2 = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
+        assert result2 == "FAAB-2525"
+        assert coordinator._firmware_cache["INV001"] == "FAAB-2525"
+
+    async def test_empty_read_returns_cloud_version(self, hass, mock_config_entry):
+        """Empty string from transport read falls back to cloud version."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        device = MagicMock()
+        device.serial_number = "INV001"
+        device._transport = MagicMock()
+        device._transport.read_firmware_version = AsyncMock(return_value="")
+
+        result = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
+        assert result == "CLOUD-1.0"

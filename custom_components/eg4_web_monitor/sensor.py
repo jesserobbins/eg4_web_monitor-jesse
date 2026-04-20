@@ -21,7 +21,10 @@ from .base_entity import (
     EG4StationEntity,
 )
 from .const import (
+    AC_COUPLE_ENERGY_DERIVED_SENSORS,
+    AC_COUPLE_PER_LEG_SENSORS,
     DISCHARGE_RECOVERY_SENSORS,
+    INVERTER_BOARD_TEMP_SENSORS,
     NON_THREE_PHASE_SENSORS,
     SENSOR_TYPES,
     SPLIT_PHASE_ONLY_SENSORS,
@@ -30,7 +33,7 @@ from .const import (
     VOLT_WATT_SENSORS,
 )
 from .coordinator import EG4DataUpdateCoordinator
-from .coordinator_mappings import GRIDBOSS_SMART_PORT_POWER_KEYS
+from .coordinator_mappings import GRIDBOSS_SMART_PORT_DYNAMIC_KEYS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +51,8 @@ def _should_create_sensor(sensor_key: str, features: dict[str, Any] | None) -> b
     Returns:
         True if the sensor should be created, False if it should be skipped
     """
-    # If no features detected, create all sensors (conservative fallback)
+    # If no features detected (None or empty dict), create all sensors
+    # (conservative fallback — entity cleanup happens via late registration)
     if not features:
         return True
 
@@ -71,6 +75,19 @@ def _should_create_sensor(sensor_key: str, features: dict[str, Any] | None) -> b
     # Check Volt-Watt sensors (only for EG4_HYBRID, LXP)
     if sensor_key in VOLT_WATT_SENSORS:
         return bool(features.get("supports_volt_watt_curve", True))
+
+    # Check per-leg AC couple sensors (regs 206-207, GridBOSS/MID only)
+    if sensor_key in AC_COUPLE_PER_LEG_SENSORS:
+        return bool(features.get("supports_ac_couple_per_leg", True))
+
+    # Check inverter board temp sensors (regs 64, 108 — not on EG4_OFFGRID)
+    if sensor_key in INVERTER_BOARD_TEMP_SENSORS:
+        return bool(features.get("supports_inverter_board_temps", True))
+
+    # AC couple energy derived from cloud consumption minus energy balance
+    # Only on EG4_OFFGRID in hybrid mode (other families have direct registers)
+    if sensor_key in AC_COUPLE_ENERGY_DERIVED_SENSORS:
+        return bool(features.get("supports_ac_couple_energy_derived", False))
 
     # Default: create the sensor
     return True
@@ -250,7 +267,7 @@ async def async_setup_entry(
             known_smart_port_keys[serial] = {
                 k
                 for k in device_data.get("sensors", {})
-                if k in GRIDBOSS_SMART_PORT_POWER_KEYS
+                if k in GRIDBOSS_SMART_PORT_DYNAMIC_KEYS
             }
 
     @callback
@@ -264,7 +281,7 @@ async def async_setup_entry(
                 continue
             known = known_smart_port_keys.setdefault(serial, set())
             for sensor_key in device_data.get("sensors", {}):
-                if sensor_key not in GRIDBOSS_SMART_PORT_POWER_KEYS:
+                if sensor_key not in GRIDBOSS_SMART_PORT_DYNAMIC_KEYS:
                     continue
                 if sensor_key in known:
                     continue
@@ -286,6 +303,61 @@ async def async_setup_entry(
 
     entry.async_on_unload(
         coordinator.async_add_listener(_async_discover_smart_port_sensors)
+    )
+
+    # Track known device sensor keys for late registration.
+    # In HYBRID mode, transport-only sensors (per-leg power, overlay sensors)
+    # only appear after local transports are attached — typically on the second
+    # coordinator update cycle.  Entities created during async_setup_entry()
+    # only cover keys present in the first update.  This listener registers
+    # new device sensor entities that appear in subsequent updates.
+    known_device_sensor_keys: dict[str, set[str]] = {}
+    for serial, device_data in coordinator.data.get("devices", {}).items():
+        dtype = device_data.get("type", "unknown")
+        if dtype in ("inverter", "gridboss"):
+            known_device_sensor_keys[serial] = {
+                k for k in device_data.get("sensors", {}) if k in SENSOR_TYPES
+            }
+
+    @callback
+    def _async_discover_device_sensors() -> None:
+        """Register device sensors that appear after initial setup."""
+        if not coordinator.data or "devices" not in coordinator.data:
+            return
+        new_entities: list[SensorEntity] = []
+        for serial, device_data in coordinator.data["devices"].items():
+            dtype = device_data.get("type", "unknown")
+            if dtype not in ("inverter", "gridboss"):
+                continue
+            features = device_data.get("features")
+            known = known_device_sensor_keys.setdefault(serial, set())
+            for sensor_key in device_data.get("sensors", {}):
+                if sensor_key not in SENSOR_TYPES or sensor_key in known:
+                    continue
+                # Skip battery_bank sensors (handled by their own entity class)
+                if sensor_key.startswith("battery_bank_"):
+                    continue
+                if not _should_create_sensor(sensor_key, features):
+                    continue
+                known.add(sensor_key)
+                new_entities.append(
+                    EG4InverterSensor(
+                        coordinator=coordinator,
+                        serial=serial,
+                        sensor_key=sensor_key,
+                        device_type=dtype,
+                    )
+                )
+        if new_entities:
+            _LOGGER.info(
+                "Late device sensor registration: adding %d entities "
+                "(transport-only sensors now available)",
+                len(new_entities),
+            )
+            async_add_entities(new_entities, True)
+
+    entry.async_on_unload(
+        coordinator.async_add_listener(_async_discover_device_sensors)
     )
 
 
@@ -311,6 +383,13 @@ def _create_inverter_sensors(
     skipped_sensors: list[str] = []
 
     # Create main inverter sensors (excluding battery_bank sensors)
+    ac_keys_present = [k for k in device_data.get("sensors", {}) if "ac_couple_energy" in k]
+    _LOGGER.debug(
+        "Inverter %s sensor creation: ac_couple_energy keys in data=%s, features=%s",
+        serial,
+        ac_keys_present,
+        {k: v for k, v in (features or {}).items() if "ac_couple" in k} if features else None,
+    )
     for sensor_key in device_data.get("sensors", {}):
         if sensor_key in SENSOR_TYPES:
             # Skip battery_bank sensors - they'll be created separately
@@ -490,6 +569,10 @@ class EG4StationSensor(EG4StationEntity, SensorEntity):
 
         if uom := sensor_config.get("unit_of_measurement"):
             self._attr_native_unit_of_measurement = uom
+
+        # Allow sensors to be disabled by default (e.g. noisy last_polled timestamps)
+        if sensor_config.get("enabled_default") is False:
+            self._attr_entity_registry_enabled_default = False
 
         # Build unique ID
         self._attr_unique_id = f"station_{coordinator.plant_id}_{sensor_key}"
