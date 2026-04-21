@@ -567,6 +567,21 @@ class DeviceProcessingMixin(_MixinBase):
         processed["sensors"].setdefault("ac_couple_energy_today", None)
         processed["sensors"].setdefault("ac_couple_energy_total", None)
 
+        # Seed EG4_OFFGRID-specific sensor keys that may not be populated
+        # by the cloud API (regs 193-194 return 0, cloud may return null).
+        # Without seeding, entities aren't created during platform setup
+        # and can't be recreated later. The transport overlay and EG4_OFFGRID
+        # fallback (lines ~700-715) fill in real values on subsequent cycles.
+        if features.get("inverter_family") == "EG4_OFFGRID":
+            for key in (
+                "grid_voltage_l1",
+                "grid_voltage_l2",
+                "eps_voltage_l1",
+                "eps_voltage_l2",
+                "ac_input_type",
+            ):
+                processed["sensors"].setdefault(key, None)
+
         # Override consumption with energy balance when transport data is present.
         # pylxpweb's energy_today_usage/energy_lifetime_usage properties read from
         # load_energy registers (Erec = AC charge from grid) when transport data
@@ -713,6 +728,14 @@ class DeviceProcessingMixin(_MixinBase):
                             grid_v_r,
                         )
                         processed["sensors"][leg_key] = grid_v_r
+
+            # Same fallback for EPS voltage L1/L2 from eps_voltage_r
+            eps_v_r = processed["sensors"].get("eps_voltage_r")
+            if eps_v_r is not None:
+                for leg_key in ("eps_voltage_l1", "eps_voltage_l2"):
+                    v = processed["sensors"].get(leg_key)
+                    if v is None or v == 0:
+                        processed["sensors"][leg_key] = eps_v_r
 
         # Add firmware_version as diagnostic sensor
         processed["sensors"]["firmware_version"] = firmware_version
@@ -2091,12 +2114,26 @@ class ParameterManagementMixin(_MixinBase):
                         raw_110 = await transport.read_parameters(110, 1)
                         if 110 in raw_110:
                             eco_on = bool(raw_110[110] & (1 << 15))
-                            self.data["parameters"][serial][
-                                "FUNC_BATTERY_ECO_EN"
-                            ] = eco_on
-                            self.data["parameters"][serial][
-                                "_raw_reg_110"
-                            ] = raw_110[110]
+                            self.data["parameters"][serial]["FUNC_BATTERY_ECO_EN"] = (
+                                eco_on
+                            )
+                            self.data["parameters"][serial]["_raw_reg_110"] = raw_110[
+                                110
+                            ]
+                    except Exception:
+                        pass  # non-critical; fall back to library value
+
+                    # AC couple: bit 11 of reg 179
+                    try:
+                        raw_179 = await transport.read_parameters(179, 1)
+                        if 179 in raw_179:
+                            ac_couple_on = bool(raw_179[179] & (1 << 11))
+                            self.data["parameters"][serial]["FUNC_179_BIT11"] = (
+                                ac_couple_on
+                            )
+                            self.data["parameters"][serial]["_raw_reg_179"] = raw_179[
+                                179
+                            ]
                     except Exception:
                         pass  # non-critical; fall back to library value
             else:

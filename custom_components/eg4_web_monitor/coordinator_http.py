@@ -251,6 +251,14 @@ class HTTPUpdateMixin(_MixinBase):
                     # either Generator OR AC Couple. Mute the inactive pair
                     # so consumers don't double-count the same watts.
                     ac_input = device_data["sensors"].get("ac_input_type")
+                    # If _read_ac_input_type failed (dongle transport lacks
+                    # _read_input_registers), fall back to EG4_OFFGRID default.
+                    # AC-coupled systems without a generator use "Grid" mode.
+                    if ac_input is None:
+                        dev_features = device_data.get("features", {})
+                        if dev_features.get("inverter_family") == "EG4_OFFGRID":
+                            ac_input = "Grid"
+                            device_data["sensors"]["ac_input_type"] = "Grid"
                     if ac_input == "Generator":
                         for k in (
                             "ac_couple_power",
