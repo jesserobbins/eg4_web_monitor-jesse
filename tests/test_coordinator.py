@@ -5939,3 +5939,34 @@ class TestEpsLoadPowerSum:
         sensors = _build_runtime_sensor_mapping(runtime_data)
 
         assert sensors["eps_load_power"] is None
+
+
+class TestOffgridFeatureFlags:
+    """Verify OFFGRID feature flags suppress always-zero sensors."""
+
+    def test_offgrid_suppresses_board_temps(self):
+        """internal_temperature and bt_temperature suppressed for OFFGRID."""
+        from custom_components.eg4_web_monitor.coordinator_mappings import (
+            _features_from_family,
+        )
+
+        features = _features_from_family("EG4_OFFGRID")
+        assert features["supports_inverter_board_temps"] is False
+
+    def test_offgrid_suppresses_ac_couple_per_leg(self):
+        """ac_couple_power_l1/l2 suppressed for OFFGRID (I206/207 always 0)."""
+        from custom_components.eg4_web_monitor.coordinator_mappings import (
+            _features_from_family,
+        )
+
+        features = _features_from_family("EG4_OFFGRID")
+        assert features["supports_ac_couple_per_leg"] is False
+
+    def test_non_offgrid_has_board_temps(self):
+        """EG4_HYBRID retains board temp support."""
+        from custom_components.eg4_web_monitor.coordinator_mappings import (
+            _features_from_family,
+        )
+
+        features = _features_from_family("EG4_HYBRID")
+        assert features.get("supports_inverter_board_temps") is not False
