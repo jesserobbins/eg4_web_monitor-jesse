@@ -200,6 +200,32 @@ class TestSwitchPlatformSetup:
         assert "EG4BatteryBackupSwitch" not in type_names
 
     @pytest.mark.asyncio
+    async def test_offgrid_suppresses_grid_tied_modes(self, hass):
+        """Peak shaving and forced discharge suppressed for EG4_OFFGRID."""
+        coordinator = _mock_coordinator(
+            model="12000XP",
+            device_data={
+                "features": {"inverter_family": "EG4_OFFGRID"},
+            },
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        mode_keys = [
+            e._mode_key
+            for e in entities
+            if isinstance(e, EG4WorkingModeSwitch)
+        ]
+        assert "peak_shaving_mode" not in mode_keys
+        assert "forced_discharge_mode" not in mode_keys
+        # AC charge and ECO should still be present
+        assert "ac_charge_mode" in mode_keys
+        assert "battery_eco_mode" in mode_keys
+
+    @pytest.mark.asyncio
     async def test_setup_creates_dst_switch_with_station(self, hass):
         """Station data present -> DST switch created."""
         coordinator = _mock_coordinator(station_data={"daylightSavingTime": True})
