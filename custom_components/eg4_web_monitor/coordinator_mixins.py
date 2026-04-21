@@ -567,6 +567,16 @@ class DeviceProcessingMixin(_MixinBase):
         processed["sensors"].setdefault("ac_couple_energy_today", None)
         processed["sensors"].setdefault("ac_couple_energy_total", None)
 
+        # EG4_OFFGRID: register 123 (generator_power) is a seconds-of-operation
+        # counter, not watts.  Suppress it here; coordinator_local.py reads
+        # per-leg registers I188 + I189 directly and populates
+        # generator_power_l1, generator_power_l2, and the summed
+        # generator_power via _read_generator_power_per_leg().
+        if features.get("inverter_family") == "EG4_OFFGRID":
+            processed["sensors"]["generator_power"] = None
+            processed["sensors"].setdefault("generator_power_l1", None)
+            processed["sensors"].setdefault("generator_power_l2", None)
+
         # Override consumption with energy balance when transport data is present.
         # pylxpweb's energy_today_usage/energy_lifetime_usage properties read from
         # load_energy registers (Erec = AC charge from grid) when transport data
@@ -621,17 +631,9 @@ class DeviceProcessingMixin(_MixinBase):
                     cloud_today,
                     cloud_lifetime,
                 )
-                if (
-                    cloud_today is not None
-                    and eb_today is not None
-                ):
-                    sensors["ac_couple_energy_today"] = max(
-                        0.0, cloud_today - eb_today
-                    )
-                if (
-                    cloud_lifetime is not None
-                    and eb_lifetime is not None
-                ):
+                if cloud_today is not None and eb_today is not None:
+                    sensors["ac_couple_energy_today"] = max(0.0, cloud_today - eb_today)
+                if cloud_lifetime is not None and eb_lifetime is not None:
                     sensors["ac_couple_energy_total"] = max(
                         0.0, cloud_lifetime - eb_lifetime
                     )

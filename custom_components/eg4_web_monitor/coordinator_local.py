@@ -74,9 +74,7 @@ def _unsigned_to_signed16(val: int) -> int:
     return val - 65536 if val >= 32768 else val
 
 
-async def _read_ac_couple_registers(
-    transport: Any, sensors: dict[str, Any]
-) -> None:
+async def _read_ac_couple_registers(transport: Any, sensors: dict[str, Any]) -> None:
     """Read AC couple power and energy from input registers.
 
     Power:
@@ -103,7 +101,9 @@ async def _read_ac_couple_registers(
         regs_total = await read_fn(153, 1)
         if regs_total and len(regs_total) >= 1:
             sensors["ac_couple_power"] = _unsigned_to_signed16(regs_total[0])
-            _LOGGER.debug("AC couple power total: reg153=%dW", sensors["ac_couple_power"])
+            _LOGGER.debug(
+                "AC couple power total: reg153=%dW", sensors["ac_couple_power"]
+            )
         else:
             _LOGGER.warning(
                 "AC couple power: unexpected response from reg 153: %s", regs_total
@@ -133,9 +133,7 @@ async def _read_ac_couple_registers(
     # energy from the ac_couple_power sensor (register 153) instead.
 
 
-async def _read_ac_input_type(
-    transport: Any, sensors: dict[str, Any]
-) -> None:
+async def _read_ac_input_type(transport: Any, sensors: dict[str, Any]) -> None:
     """Read AC input type from input register 77 (bit 0: 0=Grid, 1=Generator).
 
     Register 77 is in the temperature group (64-79) but pylxpweb removed the
@@ -159,6 +157,46 @@ async def _read_ac_input_type(
             )
     except Exception as err:
         _LOGGER.warning("AC input type register 77 read failed: %s", err)
+
+
+async def _read_generator_power_per_leg(
+    transport: Any, sensors: dict[str, Any]
+) -> None:
+    """Read per-leg generator power from input registers 188-189 for OFFGRID.
+
+    On EG4_OFFGRID, register 123 (genPower R-phase) is a seconds-of-operation
+    counter, not watts. Registers 188 (S-phase/L1) and 189 (T-phase/L2)
+    carry real per-leg generator power. Sum them for total generator_power.
+
+    Source: LuxPower Modbus protocol (188=GenPower_S, 189=GenPower_T),
+    Ivan PR#55 on ant0nkr/luxpower-ha-integration.
+    """
+    read_fn = getattr(transport, "_read_input_registers", None)
+    if read_fn is None:
+        return
+
+    try:
+        regs = await read_fn(188, 2)
+    except Exception as err:
+        _LOGGER.warning(
+            "Generator power per-leg registers 188-189 read failed: %s", err
+        )
+        return
+
+    if not regs or len(regs) < 2:
+        return
+
+    l1 = regs[0]  # I188 — S-phase = L1 on US split-phase
+    l2 = regs[1]  # I189 — T-phase = L2 on US split-phase
+    sensors["generator_power_l1"] = l1
+    sensors["generator_power_l2"] = l2
+    sensors["generator_power"] = l1 + l2
+    _LOGGER.debug(
+        "Generator power per-leg: I188=%sW (L1), I189=%sW (L2), total=%sW",
+        l1,
+        l2,
+        l1 + l2,
+    )
 
 
 class LocalTransportMixin(_MixinBase):
@@ -339,7 +377,11 @@ class LocalTransportMixin(_MixinBase):
                             params[param_name] = raw_regs[addr]
                     _LOGGER.debug(
                         "AC couple params (raw read): %s",
-                        {k: v for k, v in params.items() if k.startswith("HOLD_AC_COUPLE")},
+                        {
+                            k: v
+                            for k, v in params.items()
+                            if k.startswith("HOLD_AC_COUPLE")
+                        },
                     )
                 except Exception as ac_err:
                     _LOGGER.debug(
@@ -426,11 +468,14 @@ class LocalTransportMixin(_MixinBase):
             device_data["sensors"]["rectifier_power"] = val
         if (val := inverter.power_to_user) is not None:
             device_data["sensors"]["grid_import_power"] = val
-        # AC couple registers — direct register reads
+        # Direct register reads — AC couple and generator per-leg power
         static_transport = getattr(inverter, "_transport", None)
         if static_transport:
             await _read_ac_couple_registers(static_transport, device_data["sensors"])
             await _read_ac_input_type(static_transport, device_data["sensors"])
+            await _read_generator_power_per_leg(
+                static_transport, device_data["sensors"]
+            )
 
         transport = getattr(inverter, "_transport", None)
         if transport and hasattr(transport, "host"):
@@ -1094,11 +1139,12 @@ class LocalTransportMixin(_MixinBase):
                     sensors["rectifier_power"] = val
                 if (val := inverter.power_to_user) is not None:
                     sensors["grid_import_power"] = val
-                # AC couple registers — direct register reads
+                # Direct register reads — AC couple and generator per-leg
                 transport_obj = getattr(inverter, "_transport", None)
                 if transport_obj:
                     await _read_ac_couple_registers(transport_obj, sensors)
                     await _read_ac_input_type(transport_obj, sensors)
+                    await _read_generator_power_per_leg(transport_obj, sensors)
 
                 # Add last_polled timestamp so users can see when data was last fetched
                 # (not just when it last changed)

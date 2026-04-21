@@ -585,10 +585,13 @@ def _build_runtime_sensor_mapping(runtime_data: Any) -> dict[str, Any]:
         # battery_bank_charge_rate.
         "max_charge_current": runtime_data.bms_charge_current_limit,
         "max_discharge_current": runtime_data.bms_discharge_current_limit,
-        # AC coupling power. Seeded from generator_power (reg 123) as a fallback;
-        # coordinator_local.py overrides this with register 153 (total, raw W)
-        # and registers 206-207 (per-leg L1/L2, raw W) when available.
-        "ac_couple_power": runtime_data.generator_power,
+        # AC coupling power. Seeded as None; coordinator_local.py populates
+        # this with register 153 (total, raw W) and registers 206-207
+        # (per-leg L1/L2, raw W) when a local transport is available.
+        # Previously seeded from runtime_data.generator_power (I123), but
+        # that register is a seconds-of-operation counter on OFFGRID firmware,
+        # leaking bogus values into cloud-only mode.
+        "ac_couple_power": None,
         "ac_couple_power_l1": None,
         "ac_couple_power_l2": None,
         # AC input type (register 77, bit 0) is read as part of the standard

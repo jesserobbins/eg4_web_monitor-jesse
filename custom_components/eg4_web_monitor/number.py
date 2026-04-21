@@ -983,9 +983,7 @@ class ACCoupleEndSOCNumber(_ACCoupleBaseNumber):
         """Initialize the number entity."""
         super().__init__(coordinator, serial)
         self._attr_name = "AC Couple End SOC"
-        self._attr_unique_id = (
-            f"{self._clean_model}_{serial.lower()}_ac_couple_end_soc"
-        )
+        self._attr_unique_id = f"{self._clean_model}_{serial.lower()}_ac_couple_end_soc"
         self._attr_native_min_value = 0
         self._attr_native_max_value = 100
         self._attr_native_step = 1
@@ -1070,9 +1068,7 @@ class ACCoupleStartVoltageNumber(_ACCoupleBaseNumber):
                 )
                 await asyncio.sleep(0.5)
             else:
-                raise HomeAssistantError(
-                    "AC couple parameters require local transport"
-                )
+                raise HomeAssistantError("AC couple parameters require local transport")
             await self._refresh_related_entities()
 
 
@@ -1133,7 +1129,5 @@ class ACCoupleEndVoltageNumber(_ACCoupleBaseNumber):
                 )
                 await asyncio.sleep(0.5)
             else:
-                raise HomeAssistantError(
-                    "AC couple parameters require local transport"
-                )
+                raise HomeAssistantError("AC couple parameters require local transport")
             await self._refresh_related_entities()

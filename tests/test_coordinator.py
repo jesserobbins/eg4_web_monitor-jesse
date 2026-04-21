@@ -5656,3 +5656,167 @@ class TestResolveLocalFirmware:
 
         result = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
         assert result == "CLOUD-1.0"
+
+
+class TestOffgridGeneratorPower:
+    """Test OFFGRID generator_power override (I188+I189 instead of broken I123)."""
+
+    def _make_offgrid_inverter(
+        self,
+        *,
+        gen_power_i123: int | None = 9999,
+        gen_l1_power: float | None = None,
+        gen_l2_power: float | None = None,
+    ) -> MagicMock:
+        """Create a mock OFFGRID inverter with configurable generator values."""
+        inv = MagicMock()
+        inv.serial_number = "OG001"
+        inv.model = "12000XP"
+        inv.firmware_version = "2.0.0"
+        inv.refresh = AsyncMock()
+        inv.has_data = True
+        inv.detect_features = AsyncMock()
+
+        # pylxpweb InverterFeatures mock
+        features = MagicMock()
+        features.model_family = "EG4_OFFGRID"
+        features.device_type_code = 54
+        features.grid_type = MagicMock(value="split_phase")
+        features.split_phase = True
+        features.three_phase_capable = False
+        features.off_grid_capable = True
+        features.parallel_support = False
+        features.volt_watt_curve = False
+        features.grid_peak_shaving = False
+        features.drms_support = False
+        features.discharge_recovery_hysteresis = True
+        features.max_smart_port_count = 4
+        inv._features = features
+
+        # No transport (cloud-only mode)
+        del inv._transport
+        del inv._transport_runtime
+        del inv._transport_energy
+
+        # generator_power from I123 (seconds counter on OFFGRID - wrong)
+        inv.generator_power = gen_power_i123
+        # Per-leg generator power from I188/I189
+        inv.generator_l1_power = gen_l1_power
+        inv.generator_l2_power = gen_l2_power
+
+        return inv
+
+    async def test_offgrid_suppresses_i123_in_cloud_path(self, hass, mock_config_entry):
+        """OFFGRID: _process_inverter_object sets generator_power=None (I123 suppressed).
+
+        In cloud-only mode, registers 188/189 aren't available. The I123 seconds
+        counter must not leak through. Per-leg values come from coordinator_local.py
+        direct register reads when a local transport is attached.
+        """
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        inv = self._make_offgrid_inverter(gen_power_i123=39000)
+
+        result = await coordinator._process_inverter_object(inv)
+        sensors = result["sensors"]
+
+        # I123 value (39000 seconds counter) must NOT appear as generator_power
+        assert sensors.get("generator_power") is None
+        # Per-leg keys are seeded for entity creation
+        assert "generator_power_l1" in sensors
+        assert "generator_power_l2" in sensors
+
+    async def test_non_offgrid_gen_power_unchanged(self, hass, mock_config_entry):
+        """Non-OFFGRID inverter keeps generator_power from I123."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        inv = self._make_offgrid_inverter(gen_power_i123=500)
+        # Override to non-OFFGRID family
+        inv._features.model_family = "EG4_HYBRID"
+        inv.model = "FlexBOSS21"
+
+        result = await coordinator._process_inverter_object(inv)
+        sensors = result["sensors"]
+
+        # Should keep the I123 value
+        assert sensors["generator_power"] == 500
+
+
+class TestAcCouplePowerSeeding:
+    """Test ac_couple_power is seeded as None, not from I123."""
+
+    async def test_ac_couple_power_seeded_none(self, hass, mock_config_entry):
+        """ac_couple_power should be seeded as None, not from generator_power."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        inv = MagicMock()
+        inv.serial_number = "TEST001"
+        inv.model = "FlexBOSS21"
+        inv.firmware_version = "1.0.0"
+        inv.refresh = AsyncMock()
+        inv.has_data = True
+        inv.detect_features = AsyncMock()
+        inv.generator_power = 9999  # seconds counter or real power
+
+        # No transport
+        del inv._transport
+        del inv._transport_runtime
+        del inv._transport_energy
+
+        result = await coordinator._process_inverter_object(inv)
+        sensors = result["sensors"]
+
+        # ac_couple_power should be None, not 9999
+        assert sensors.get("ac_couple_power") is None
+
+
+class TestReadGeneratorPowerPerLeg:
+    """Test _read_generator_power_per_leg() direct register read."""
+
+    async def test_reads_i188_i189_and_sums(self):
+        """Reads registers 188-189 and populates L1, L2, and sum."""
+        transport = MagicMock()
+        transport._read_input_registers = AsyncMock(return_value=[500, 300])
+        sensors: dict[str, Any] = {}
+
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_generator_power_per_leg,
+        )
+
+        await _read_generator_power_per_leg(transport, sensors)
+
+        assert sensors["generator_power_l1"] == 500
+        assert sensors["generator_power_l2"] == 300
+        assert sensors["generator_power"] == 800
+
+    async def test_both_zero_no_gen(self):
+        """No generator connected: both registers read 0."""
+        transport = MagicMock()
+        transport._read_input_registers = AsyncMock(return_value=[0, 0])
+        sensors: dict[str, Any] = {}
+
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_generator_power_per_leg,
+        )
+
+        await _read_generator_power_per_leg(transport, sensors)
+
+        assert sensors["generator_power_l1"] == 0
+        assert sensors["generator_power_l2"] == 0
+        assert sensors["generator_power"] == 0
+
+    async def test_no_read_fn_does_nothing(self):
+        """No _read_input_registers method — no-op."""
+        transport = MagicMock(spec=[])  # empty spec = no attributes
+        sensors: dict[str, Any] = {}
+
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_generator_power_per_leg,
+        )
+
+        await _read_generator_power_per_leg(transport, sensors)
+
+        assert "generator_power" not in sensors
