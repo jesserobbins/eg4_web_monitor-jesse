@@ -743,11 +743,9 @@ class DeviceProcessingMixin(_MixinBase):
                     if v is None or v == 0:
                         processed["sensors"][leg_key] = eps_v_r
 
-        # EG4_OFFGRID: suppress generator_power (I123 is a seconds counter,
-        # not actual power — cloud labels it genPower but no generator exists).
-        # Must be done here, not in hybrid supplement, to catch every cycle.
-        if features.get("inverter_family") == "EG4_OFFGRID":
-            processed["sensors"]["generator_power"] = None
+        # Suppress generator_power unconditionally — I123 is a seconds counter
+        # on EG4_OFFGRID. Using unconditional delete to prove code path runs.
+        processed["sensors"].pop("generator_power", None)
 
         # Add firmware_version as diagnostic sensor
         processed["sensors"]["firmware_version"] = firmware_version
