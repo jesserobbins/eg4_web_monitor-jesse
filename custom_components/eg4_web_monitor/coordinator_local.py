@@ -127,10 +127,48 @@ async def _read_ac_couple_registers(transport: Any, sensors: dict[str, Any]) -> 
     except Exception as err:
         _LOGGER.warning("AC couple power registers 206-207 read failed: %s", err)
 
-    # NOTE: Registers 124-126 are generator energy (Egen_day, Egen_all L/H),
-    # NOT AC couple energy. There are no dedicated AC couple energy registers
-    # in the Modbus spec. Use HA's Riemann sum integration helper to derive
-    # energy from the ac_couple_power sensor (register 153) instead.
+    # NOTE: Registers 124-126 are generator energy on standard firmware.
+    # On OFFGRID with ac_input_type == "Grid", they become AC couple energy
+    # in raw watt-hours. See _read_ac_couple_energy() for that case.
+
+
+async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> None:
+    """Read AC couple energy from registers 124-126 with correct scale for OFFGRID.
+
+    On EG4_OFFGRID, registers 124-126 store AC couple energy in raw watt-hours.
+    pylxpweb annotates these as DIV_10 (0.1 kWh), which gives 100x wrong values.
+    Only populate when ac_input_type == "Grid" (AC couple active, not generator).
+
+    Register 124: energy today (raw Wh, ÷1000 = kWh)
+    Registers 125-126: energy total (32-bit raw Wh, ÷1000 = kWh)
+    """
+    if sensors.get("ac_input_type") != "Grid":
+        return
+
+    read_fn = getattr(transport, "_read_input_registers", None)
+    if read_fn is None:
+        return
+
+    try:
+        regs = await read_fn(124, 3)
+    except Exception as err:
+        _LOGGER.warning("AC couple energy registers 124-126 read failed: %s", err)
+        return
+
+    if not regs or len(regs) < 3:
+        return
+
+    today = regs[0] / 1000.0
+    total_raw = regs[1] | (regs[2] << 16)
+    total = total_raw / 1000.0
+    sensors["ac_couple_energy_today"] = round(today, 3)
+    sensors["ac_couple_energy_total"] = round(total, 3)
+    _LOGGER.debug(
+        "AC couple energy: today=%.3f kWh, total=%.3f kWh (raw: %s)",
+        today,
+        total,
+        regs,
+    )
 
 
 async def _read_ac_input_type(transport: Any, sensors: dict[str, Any]) -> None:
@@ -473,6 +511,7 @@ class LocalTransportMixin(_MixinBase):
         if static_transport:
             await _read_ac_couple_registers(static_transport, device_data["sensors"])
             await _read_ac_input_type(static_transport, device_data["sensors"])
+            await _read_ac_couple_energy(static_transport, device_data["sensors"])
             await _read_generator_power_per_leg(
                 static_transport, device_data["sensors"]
             )
@@ -1144,6 +1183,7 @@ class LocalTransportMixin(_MixinBase):
                 if transport_obj:
                     await _read_ac_couple_registers(transport_obj, sensors)
                     await _read_ac_input_type(transport_obj, sensors)
+                    await _read_ac_couple_energy(transport_obj, sensors)
                     await _read_generator_power_per_leg(transport_obj, sensors)
 
                 # Add last_polled timestamp so users can see when data was last fetched
