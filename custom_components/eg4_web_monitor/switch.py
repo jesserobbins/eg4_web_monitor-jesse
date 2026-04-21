@@ -612,19 +612,9 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
 
         pylxpweb maps FUNC_BATTERY_ECO_EN to bit 9 but the 12000XP uses
         bit 15 (Modbus sweep confirmed reg 110 = 0x8080 when ECO on).
-        Perform a direct read-modify-write on the correct bit.
+        Uses coordinator.write_raw_register for proper hybrid transport lookup.
         """
-        # In hybrid mode, inverter lives in station.all_inverters, not
-        # _inverter_cache. Check both sources.
-        inverter = self.coordinator.get_inverter_object(self._serial)
-        if inverter is None and hasattr(self.coordinator, "station") and self.coordinator.station:
-            for inv in self.coordinator.station.all_inverters:
-                if inv.serial_number == self._serial:
-                    inverter = inv
-                    break
-        if inverter is None:
-            raise HomeAssistantError(f"Inverter {self._serial} not found")
-        transport = getattr(inverter, "_transport", None)
+        transport = self.coordinator.get_local_transport(self._serial)
         if transport is None:
             raise HomeAssistantError(
                 "Battery ECO Mode requires local transport (Modbus/Dongle)"
@@ -639,7 +629,16 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
             else:
                 new_val = current_val & ~(1 << 15)
 
-            await transport.write_parameters({110: new_val})
+            await self.coordinator.write_raw_register(
+                110, new_val, serial=self._serial
+            )
+
+            # Update coordinator parameter data immediately
+            if self.coordinator.data and "parameters" in self.coordinator.data:
+                params = self.coordinator.data["parameters"].get(self._serial)
+                if params is not None:
+                    params["FUNC_BATTERY_ECO_EN"] = turn_on
+
             _LOGGER.info(
                 "Battery ECO Mode %s: reg110 0x%04X -> 0x%04X",
                 "ON" if turn_on else "OFF",
