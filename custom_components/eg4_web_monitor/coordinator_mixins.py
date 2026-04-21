@@ -2094,6 +2094,9 @@ class ParameterManagementMixin(_MixinBase):
                             self.data["parameters"][serial][
                                 "FUNC_BATTERY_ECO_EN"
                             ] = eco_on
+                            self.data["parameters"][serial][
+                                "_raw_reg_110"
+                            ] = raw_110[110]
                     except Exception:
                         pass  # non-critical; fall back to library value
             else:

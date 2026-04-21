@@ -411,6 +411,7 @@ class LocalTransportMixin(_MixinBase):
                 if 110 in raw_110:
                     eco_on = bool(raw_110[110] & (1 << 15))
                     params["FUNC_BATTERY_ECO_EN"] = eco_on
+                    params["_raw_reg_110"] = raw_110[110]
                     _LOGGER.debug(
                         "Battery ECO override: reg110=0x%04X, bit15=%s",
                         raw_110[110],
