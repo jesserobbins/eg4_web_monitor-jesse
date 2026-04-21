@@ -197,6 +197,30 @@ async def _read_ac_input_type(transport: Any, sensors: dict[str, Any]) -> None:
         _LOGGER.warning("AC input type register 77 read failed: %s", err)
 
 
+async def _read_consumption_power(transport: Any, sensors: dict[str, Any]) -> None:
+    """Read consumption power from input register 234.
+
+    Register 234 matches the cloud consumptionPower field within ~2W.
+    Provides a direct hardware measurement rather than the energy-balance
+    calculation currently used by pylxpweb.
+    """
+    read_fn = getattr(transport, "_read_input_registers", None)
+    if read_fn is None:
+        return
+
+    try:
+        regs = await read_fn(234, 1)
+    except Exception as err:
+        _LOGGER.warning("Consumption power register 234 read failed: %s", err)
+        return
+
+    if not regs or len(regs) < 1:
+        return
+
+    sensors["consumption_power"] = regs[0]
+    _LOGGER.debug("Consumption power: reg234=%dW", regs[0])
+
+
 async def _read_generator_power_per_leg(
     transport: Any, sensors: dict[str, Any]
 ) -> None:
@@ -512,6 +536,7 @@ class LocalTransportMixin(_MixinBase):
             await _read_ac_couple_registers(static_transport, device_data["sensors"])
             await _read_ac_input_type(static_transport, device_data["sensors"])
             await _read_ac_couple_energy(static_transport, device_data["sensors"])
+            await _read_consumption_power(static_transport, device_data["sensors"])
             await _read_generator_power_per_leg(
                 static_transport, device_data["sensors"]
             )
@@ -1184,6 +1209,7 @@ class LocalTransportMixin(_MixinBase):
                     await _read_ac_couple_registers(transport_obj, sensors)
                     await _read_ac_input_type(transport_obj, sensors)
                     await _read_ac_couple_energy(transport_obj, sensors)
+                    await _read_consumption_power(transport_obj, sensors)
                     await _read_generator_power_per_leg(transport_obj, sensors)
 
                 # Add last_polled timestamp so users can see when data was last fetched
