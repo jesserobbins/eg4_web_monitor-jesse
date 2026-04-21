@@ -463,6 +463,19 @@ _WORKING_MODE_PARAMETERS: dict[str, str | None] = {
     "FUNC_GRID_PEAK_SHAVING": PARAM_FUNC_GRID_PEAK_SHAVING,  # Register 179, bit 7
     "FUNC_179_BIT11": PARAM_FUNC_AC_COUPLE_EN,  # Register 179, bit 11: AC coupling
     "FUNC_BATTERY_BACKUP_CTRL": PARAM_FUNC_BATTERY_BACKUP_CTRL,  # Register 233, bit 1
+    # Raw bit-toggle modes — use raw register r/w, not named parameters.
+    # Truthy values needed so local-only mode doesn't skip entity creation.
+    "FUNC_BATTERY_ECO_EN": "FUNC_BATTERY_ECO_EN",  # Register 110, bit 15
+    "FUNC_EXPORT_AC_COUPLE": "FUNC_EXPORT_AC_COUPLE",  # Register 226, bit 14
+}
+
+# Raw register bit-toggle mapping for modes where pylxpweb's named parameter
+# system uses the wrong bit position or doesn't exist.
+# Format: param -> (register, bit, raw_cache_key, label)
+_RAW_BIT_TOGGLES: dict[str, tuple[int, int, str, str]] = {
+    "FUNC_BATTERY_ECO_EN": (110, 15, "_raw_reg_110", "Battery ECO Mode"),
+    "FUNC_EXPORT_AC_COUPLE": (226, 14, "_raw_reg_226", "Export AC Couple"),
+    "FUNC_179_BIT11": (179, 11, "_raw_reg_179", "AC Coupling Mode"),
 }
 
 
@@ -572,13 +585,6 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
         """Execute working mode toggle, preferring local transport."""
         param = self._mode_config["param"]
 
-        # Raw register bit-toggle for modes where pylxpweb's named parameter
-        # mapping uses the wrong bit position or doesn't exist.
-        _RAW_BIT_TOGGLES = {
-            "FUNC_BATTERY_ECO_EN": (110, 15, "_raw_reg_110", "Battery ECO Mode"),
-            "FUNC_EXPORT_AC_COUPLE": (226, 14, "_raw_reg_226", "Export AC Couple"),
-            "FUNC_179_BIT11": (179, 11, "_raw_reg_179", "AC Coupling Mode"),
-        }
         if param in _RAW_BIT_TOGGLES:
             register, bit, cache_key, label = _RAW_BIT_TOGGLES[param]
             await self._execute_raw_bit_toggle(
