@@ -186,6 +186,7 @@ INVERTER_RUNTIME_KEYS: frozenset[str] = frozenset(
         # EPS per-leg (split-phase, regs 129-132)
         "eps_power_l1",
         "eps_power_l2",
+        "eps_load_power",
         "eps_apparent_power_l1",
         "eps_apparent_power_l2",
         # US split-phase per-leg power (regs 195-204)
@@ -499,7 +500,7 @@ def _build_runtime_sensor_mapping(runtime_data: Any) -> dict[str, Any]:
     Returns:
         Dictionary mapping sensor keys to values.
     """
-    return {
+    sensors = {
         # PV/Solar input
         "pv1_voltage": runtime_data.pv1_voltage,
         "pv1_power": runtime_data.pv1_power,
@@ -606,6 +607,16 @@ def _build_runtime_sensor_mapping(runtime_data: Any) -> dict[str, Any]:
             else None
         ),
     }
+
+    # Derived: eps_load_power = eps_power_l1 + eps_power_l2 (split-phase sum)
+    l1 = sensors.get("eps_power_l1")
+    l2 = sensors.get("eps_power_l2")
+    if l1 is not None or l2 is not None:
+        sensors["eps_load_power"] = (l1 or 0) + (l2 or 0)
+    else:
+        sensors["eps_load_power"] = None
+
+    return sensors
 
 
 def _energy_balance(

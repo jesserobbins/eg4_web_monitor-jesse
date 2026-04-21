@@ -5866,3 +5866,52 @@ class TestOffgridL1L2VoltageKeys:
         assert "grid_voltage_l2" in sensors
         assert "eps_voltage_l1" in sensors
         assert "eps_voltage_l2" in sensors
+        assert "eps_load_power" in sensors
+
+
+class TestEpsLoadPowerSum:
+    """Test eps_load_power sum sensor from eps_power_l1 + eps_power_l2."""
+
+    async def test_eps_load_power_sums_l1_l2(self):
+        """eps_load_power = eps_power_l1 + eps_power_l2."""
+        from custom_components.eg4_web_monitor.coordinator_mappings import (
+            _build_runtime_sensor_mapping,
+        )
+
+        runtime_data = MagicMock()
+        runtime_data.eps_l1_power = 1031
+        runtime_data.eps_l2_power = 296
+
+        sensors = _build_runtime_sensor_mapping(runtime_data)
+
+        assert sensors["eps_power_l1"] == 1031
+        assert sensors["eps_power_l2"] == 296
+        assert sensors["eps_load_power"] == 1327
+
+    async def test_eps_load_power_one_leg_none(self):
+        """eps_load_power with one leg None still sums the other."""
+        from custom_components.eg4_web_monitor.coordinator_mappings import (
+            _build_runtime_sensor_mapping,
+        )
+
+        runtime_data = MagicMock()
+        runtime_data.eps_l1_power = 500
+        runtime_data.eps_l2_power = None
+
+        sensors = _build_runtime_sensor_mapping(runtime_data)
+
+        assert sensors["eps_load_power"] == 500
+
+    async def test_eps_load_power_both_none(self):
+        """eps_load_power is None when both legs are None."""
+        from custom_components.eg4_web_monitor.coordinator_mappings import (
+            _build_runtime_sensor_mapping,
+        )
+
+        runtime_data = MagicMock()
+        runtime_data.eps_l1_power = None
+        runtime_data.eps_l2_power = None
+
+        sensors = _build_runtime_sensor_mapping(runtime_data)
+
+        assert sensors["eps_load_power"] is None

@@ -587,6 +587,7 @@ class DeviceProcessingMixin(_MixinBase):
             processed["sensors"].setdefault("grid_voltage_l2", None)
             processed["sensors"].setdefault("eps_voltage_l1", None)
             processed["sensors"].setdefault("eps_voltage_l2", None)
+            processed["sensors"].setdefault("eps_load_power", None)
 
         # Override consumption with energy balance when transport data is present.
         # pylxpweb's energy_today_usage/energy_lifetime_usage properties read from

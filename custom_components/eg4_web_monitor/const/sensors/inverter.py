@@ -165,6 +165,14 @@ SENSOR_TYPES = {
         "state_class": "measurement",
         "icon": "mdi:power-plug",
     },
+    # EPS load power: sum of per-leg L1+L2 (split-phase, regs 129+130)
+    "eps_load_power": {
+        "name": "EPS Load Power",
+        "unit": UnitOfPower.WATT,
+        "device_class": "power",
+        "state_class": "measurement",
+        "icon": "mdi:home-lightning-bolt",
+    },
     # EPS per-leg apparent power (split-phase, regs 131-132)
     "eps_apparent_power_l1": {
         "name": "EPS Apparent Power L1",
