@@ -4658,6 +4658,30 @@ class TestHybridTransportExclusiveSensors:
         assert sensors["grid_current_l3"] == 4.1
         assert sensors["battery_current"] == 12.5
 
+    async def test_transport_runtime_populates_load_power(
+        self, hass, mock_config_entry
+    ):
+        """load_power from transport_runtime (I170) overlays into sensors."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        mock_inverter = MagicMock()
+        mock_inverter.serial_number = "1111111111"
+        mock_inverter.model = "12000XP"
+        mock_inverter.firmware_version = "2.0.0"
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter.detect_features = AsyncMock()
+        mock_inverter._transport = MagicMock()
+
+        mock_runtime = MagicMock()
+        mock_runtime.load_power = 3788
+        mock_inverter._transport_runtime = mock_runtime
+
+        result = await coordinator._process_inverter_object(mock_inverter)
+        sensors = result["sensors"]
+
+        assert sensors["load_power"] == 3788
+
     async def test_no_transport_runtime_skips_overlay(self, hass, mock_config_entry):
         """Without _transport_runtime, overlay is skipped entirely."""
         mock_config_entry.add_to_hass(hass)

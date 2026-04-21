@@ -667,6 +667,9 @@ class DeviceProcessingMixin(_MixinBase):
                 ("grid_current_l2", "inverter_rms_current_s"),
                 ("grid_current_l3", "inverter_rms_current_t"),
                 ("battery_current", "battery_current"),
+                # load_power (I170, Pload) — cloud API zeroes this for OFFGRID,
+                # but Modbus register 170 has the real value.
+                ("load_power", "load_power"),
             )
             for sensor_key, runtime_attr in _TRANSPORT_OVERLAY:
                 value = getattr(transport_runtime, runtime_attr, None)
