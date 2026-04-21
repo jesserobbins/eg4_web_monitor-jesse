@@ -567,20 +567,26 @@ class DeviceProcessingMixin(_MixinBase):
         processed["sensors"].setdefault("ac_couple_energy_today", None)
         processed["sensors"].setdefault("ac_couple_energy_total", None)
 
-        # Seed EG4_OFFGRID-specific sensor keys that may not be populated
-        # by the cloud API (regs 193-194 return 0, cloud may return null).
-        # Without seeding, entities aren't created during platform setup
-        # and can't be recreated later. The transport overlay and EG4_OFFGRID
-        # fallback (lines ~700-715) fill in real values on subsequent cycles.
+        # EG4_OFFGRID: seed sensor keys and apply voltage fallbacks.
+        # Cloud returns None for L1/L2 voltages (regs 193-194 = 0 on 12000XP).
+        # Seed with actual values from R-phase so entities are created with
+        # real data on the first cycle. Also suppress generator_power (I123
+        # is a seconds counter, not power).
         if features.get("inverter_family") == "EG4_OFFGRID":
-            for key in (
-                "grid_voltage_l1",
-                "grid_voltage_l2",
-                "eps_voltage_l1",
-                "eps_voltage_l2",
-                "ac_input_type",
-            ):
-                processed["sensors"].setdefault(key, None)
+            sensors = processed["sensors"]
+            # Voltage L1/L2: fallback from R-phase voltage
+            grid_v = sensors.get("grid_voltage_r")
+            if grid_v is not None:
+                sensors.setdefault("grid_voltage_l1", grid_v)
+                sensors.setdefault("grid_voltage_l2", grid_v)
+            eps_v = sensors.get("eps_voltage_r")
+            if eps_v is not None:
+                sensors.setdefault("eps_voltage_l1", eps_v)
+                sensors.setdefault("eps_voltage_l2", eps_v)
+            # AC input type: default to Grid (AC coupled, no generator)
+            sensors.setdefault("ac_input_type", "Grid")
+            # Generator power: suppress (I123 is seconds counter)
+            sensors["generator_power"] = None
 
         # Override consumption with energy balance when transport data is present.
         # pylxpweb's energy_today_usage/energy_lifetime_usage properties read from
@@ -736,6 +742,12 @@ class DeviceProcessingMixin(_MixinBase):
                     v = processed["sensors"].get(leg_key)
                     if v is None or v == 0:
                         processed["sensors"][leg_key] = eps_v_r
+
+        # EG4_OFFGRID: suppress generator_power (I123 is a seconds counter,
+        # not actual power — cloud labels it genPower but no generator exists).
+        # Must be done here, not in hybrid supplement, to catch every cycle.
+        if features.get("inverter_family") == "EG4_OFFGRID":
+            processed["sensors"]["generator_power"] = None
 
         # Add firmware_version as diagnostic sensor
         processed["sensors"]["firmware_version"] = firmware_version
