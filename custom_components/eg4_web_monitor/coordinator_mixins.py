@@ -577,6 +577,17 @@ class DeviceProcessingMixin(_MixinBase):
             processed["sensors"].setdefault("generator_power_l1", None)
             processed["sensors"].setdefault("generator_power_l2", None)
 
+        # Seed split-phase L1/L2 voltage keys for entity creation.
+        # These come from registers I193/I194 (grid) and I127/I128 (EPS) via
+        # the local transport (_build_runtime_sensor_mapping), but must be
+        # present as keys here so that entity platform discovers them on first
+        # refresh even in cloud-only mode.
+        if features.get("supports_split_phase"):
+            processed["sensors"].setdefault("grid_voltage_l1", None)
+            processed["sensors"].setdefault("grid_voltage_l2", None)
+            processed["sensors"].setdefault("eps_voltage_l1", None)
+            processed["sensors"].setdefault("eps_voltage_l2", None)
+
         # Override consumption with energy balance when transport data is present.
         # pylxpweb's energy_today_usage/energy_lifetime_usage properties read from
         # load_energy registers (Erec = AC charge from grid) when transport data

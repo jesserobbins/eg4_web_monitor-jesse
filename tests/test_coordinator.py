@@ -5820,3 +5820,49 @@ class TestReadGeneratorPowerPerLeg:
         await _read_generator_power_per_leg(transport, sensors)
 
         assert "generator_power" not in sensors
+
+
+class TestOffgridL1L2VoltageKeys:
+    """Verify L1/L2 voltage keys are present in sensor dict for OFFGRID entity creation."""
+
+    async def test_grid_voltage_l1_l2_in_sensor_dict(self, hass, mock_config_entry):
+        """grid_voltage_l1/l2 keys must be present for split-phase entity creation."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        inv = MagicMock()
+        inv.serial_number = "OG001"
+        inv.model = "12000XP"
+        inv.firmware_version = "2.0.0"
+        inv.refresh = AsyncMock()
+        inv.has_data = True
+        inv.detect_features = AsyncMock()
+
+        features = MagicMock()
+        features.model_family = "EG4_OFFGRID"
+        features.device_type_code = 54
+        features.grid_type = MagicMock(value="split_phase")
+        features.split_phase = True
+        features.three_phase_capable = False
+        features.off_grid_capable = True
+        features.parallel_support = False
+        features.volt_watt_curve = False
+        features.grid_peak_shaving = False
+        features.drms_support = False
+        features.discharge_recovery_hysteresis = True
+        features.max_smart_port_count = 4
+        inv._features = features
+
+        # No transport (cloud-only path)
+        del inv._transport
+        del inv._transport_runtime
+        del inv._transport_energy
+
+        result = await coordinator._process_inverter_object(inv)
+        sensors = result["sensors"]
+
+        # L1/L2 voltage keys must exist in the dict for entity creation
+        assert "grid_voltage_l1" in sensors
+        assert "grid_voltage_l2" in sensors
+        assert "eps_voltage_l1" in sensors
+        assert "eps_voltage_l2" in sensors
