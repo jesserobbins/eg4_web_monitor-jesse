@@ -2191,9 +2191,16 @@ class LocalTransportMixin(_MixinBase):
         Returns:
             ModbusTransport, DongleTransport, or None if using HTTP-only mode.
         """
-        # Check for transport attached to Station device (HYBRID with local_transports)
+        # Check for transport attached to Station device (HYBRID with local_transports).
+        # get_inverter_object uses _inverter_cache which is only populated in
+        # pure-local mode. In hybrid, inverters live in station.all_inverters.
         if serial and self.station:
             inverter = self.get_inverter_object(serial)
+            if inverter is None:
+                for inv in self.station.all_inverters:
+                    if inv.serial_number == serial:
+                        inverter = inv
+                        break
             transport = getattr(inverter, "_transport", None) if inverter else None
             if transport:
                 return transport
