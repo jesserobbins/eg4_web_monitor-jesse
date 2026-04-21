@@ -438,6 +438,42 @@ class TestReadReg226ExportACCouple:
         assert "FUNC_EXPORT_AC_COUPLE" not in params
 
 
+# ── _read_reg_179_ac_couple_mode ──────────────────────────────────────
+
+
+class TestReadReg179ACCoupleMode:
+    """Test raw register 179 read for AC Coupling Mode (bit 11)."""
+
+    async def test_ac_couple_enabled(self):
+        """Bit 11 set → AC Coupling Mode enabled."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_reg_179_ac_couple_mode,
+        )
+
+        transport = MagicMock()
+        transport.read_parameters = AsyncMock(return_value={179: 0x0800})
+        params: dict = {}
+
+        await _read_reg_179_ac_couple_mode(transport, params)
+
+        assert params["FUNC_179_BIT11"] is True
+        assert params["_raw_reg_179"] == 0x0800
+
+    async def test_ac_couple_disabled(self):
+        """Bit 11 clear → AC Coupling Mode disabled."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_reg_179_ac_couple_mode,
+        )
+
+        transport = MagicMock()
+        transport.read_parameters = AsyncMock(return_value={179: 0x0080})
+        params: dict = {}
+
+        await _read_reg_179_ac_couple_mode(transport, params)
+
+        assert params["FUNC_179_BIT11"] is False
+
+
 # ── _read_ac_couple_registers / _read_ac_input_type ──────────────────────
 
 

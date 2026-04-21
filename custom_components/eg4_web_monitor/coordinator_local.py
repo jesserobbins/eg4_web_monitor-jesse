@@ -297,6 +297,35 @@ async def _override_reg_110_bits(transport: Any, params: dict[str, Any]) -> None
     )
 
 
+async def _read_reg_179_ac_couple_mode(transport: Any, params: dict[str, Any]) -> None:
+    """Read AC Coupling Mode from bit 11 of holding register 179.
+
+    pylxpweb may not map bit 11 correctly for all families. Read raw and
+    extract bit 11, caching the full register value for read-modify-write.
+    """
+    read_fn = getattr(transport, "read_parameters", None)
+    if read_fn is None:
+        return
+
+    try:
+        raw_data = await read_fn(179, 1)
+    except Exception as err:
+        _LOGGER.warning("Raw register 179 read failed: %s", err)
+        return
+
+    if not raw_data or 179 not in raw_data:
+        return
+
+    raw_179 = raw_data[179]
+    params["FUNC_179_BIT11"] = bool(raw_179 & (1 << 11))
+    params["_raw_reg_179"] = raw_179
+    _LOGGER.debug(
+        "Register 179 raw=0x%04X: AC Couple(bit11)=%s",
+        raw_179,
+        params["FUNC_179_BIT11"],
+    )
+
+
 async def _read_reg_226_export_ac_couple(
     transport: Any, params: dict[str, Any]
 ) -> None:
@@ -547,6 +576,9 @@ class LocalTransportMixin(_MixinBase):
         # pylxpweb maps FUNC_BATTERY_ECO_EN to bit 9 and FUNC_GREEN_EN to bit 8,
         # but 12000XP hardware uses bits 15 and 14 respectively.
         await _override_reg_110_bits(transport, params)
+
+        # Read AC Coupling Mode (bit 11 of register 179).
+        await _read_reg_179_ac_couple_mode(transport, params)
 
         # Read Export AC Couple (bit 14 of register 226).
         await _read_reg_226_export_ac_couple(transport, params)

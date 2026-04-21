@@ -577,6 +577,7 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
         _RAW_BIT_TOGGLES = {
             "FUNC_BATTERY_ECO_EN": (110, 15, "_raw_reg_110", "Battery ECO Mode"),
             "FUNC_EXPORT_AC_COUPLE": (226, 14, "_raw_reg_226", "Export AC Couple"),
+            "FUNC_179_BIT11": (179, 11, "_raw_reg_179", "AC Coupling Mode"),
         }
         if param in _RAW_BIT_TOGGLES:
             register, bit, cache_key, label = _RAW_BIT_TOGGLES[param]
