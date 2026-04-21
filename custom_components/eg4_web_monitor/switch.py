@@ -30,7 +30,6 @@ from .const import (
     PARAM_FUNC_EPS_EN,
     PARAM_FUNC_FORCED_CHG_EN,
     PARAM_FUNC_FORCED_DISCHG_EN,
-    PARAM_FUNC_GREEN_EN,
     PARAM_FUNC_GRID_PEAK_SHAVING,
     SUPPORTED_INVERTER_MODELS,
     WORKING_MODES,
@@ -399,23 +398,38 @@ class EG4OffGridModeSwitch(EG4BaseSwitch):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable off-grid mode."""
-        await self._execute_local_with_fallback(
-            action_name="off-grid mode (Green Mode)",
-            parameter=PARAM_FUNC_GREEN_EN,
-            value=True,
-            cloud_enable_method="enable_green_mode",
-            cloud_disable_method="disable_green_mode",
-        )
+        await self._execute_green_mode_raw(turn_on=True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Disable off-grid mode."""
-        await self._execute_local_with_fallback(
-            action_name="off-grid mode (Green Mode)",
-            parameter=PARAM_FUNC_GREEN_EN,
-            value=False,
-            cloud_enable_method="enable_green_mode",
-            cloud_disable_method="disable_green_mode",
-        )
+        await self._execute_green_mode_raw(turn_on=False)
+
+    async def _execute_green_mode_raw(self, turn_on: bool) -> None:
+        """Toggle Green Mode via raw bit-14 write to register 110.
+
+        pylxpweb maps FUNC_GREEN_EN to bit 8, but hardware uses bit 14.
+        Same mismatch pattern as ECO Mode (bit 9 vs bit 15).
+        """
+        self._optimistic_state = turn_on
+        self.async_write_ha_state()
+        try:
+            params = self.coordinator.data.get("parameters", {}).get(self._serial, {})
+            current_val = params.get("_raw_reg_110", 0)
+            if turn_on:
+                new_val = current_val | (1 << 14)
+            else:
+                new_val = current_val & ~(1 << 14)
+            await self.coordinator.write_raw_register(110, new_val, serial=self._serial)
+            params["FUNC_GREEN_EN"] = turn_on
+            params["_raw_reg_110"] = new_val
+            await asyncio.sleep(0.5)
+            await self.coordinator.async_refresh()
+            self._optimistic_state = None
+            self.async_write_ha_state()
+        except Exception as err:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+            raise HomeAssistantError(f"Failed to set Off-Grid Mode: {err}") from err
 
 
 # Mapping of working mode parameters to inverter method names (HTTP API)
@@ -548,6 +562,20 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
     async def _execute_working_mode(self, turn_on: bool) -> None:
         """Execute working mode toggle, preferring local transport."""
         param = self._mode_config["param"]
+
+        # Raw register bit-toggle for modes where pylxpweb's named parameter
+        # mapping uses the wrong bit position (ECO=bit15 of H110).
+        if param == "FUNC_BATTERY_ECO_EN":
+            await self._execute_raw_bit_toggle(
+                register=110,
+                bit=15,
+                turn_on=turn_on,
+                param_key="FUNC_BATTERY_ECO_EN",
+                raw_cache_key="_raw_reg_110",
+                label="Battery ECO Mode",
+            )
+            return
+
         param_name = _WORKING_MODE_PARAMETERS.get(param)
         methods = _WORKING_MODE_METHODS.get(param)
 
@@ -580,6 +608,43 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
             raise HomeAssistantError(
                 f"Working mode {param} not available via any transport"
             )
+
+    async def _execute_raw_bit_toggle(
+        self,
+        register: int,
+        bit: int,
+        turn_on: bool,
+        param_key: str,
+        raw_cache_key: str,
+        label: str,
+    ) -> None:
+        """Toggle a single bit in a holding register via raw read-modify-write.
+
+        Used for modes where pylxpweb's named parameter system maps the wrong
+        bit position (e.g., ECO Mode bit 15, Green Mode bit 14 in register 110).
+        """
+        self._optimistic_state = turn_on
+        self.async_write_ha_state()
+        try:
+            params = self.coordinator.data.get("parameters", {}).get(self._serial, {})
+            current_val = params.get(raw_cache_key, 0)
+            if turn_on:
+                new_val = current_val | (1 << bit)
+            else:
+                new_val = current_val & ~(1 << bit)
+            await self.coordinator.write_raw_register(
+                register, new_val, serial=self._serial
+            )
+            params[param_key] = turn_on
+            params[raw_cache_key] = new_val
+            await asyncio.sleep(0.5)
+            await self.coordinator.async_refresh()
+            self._optimistic_state = None
+            self.async_write_ha_state()
+        except Exception as err:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+            raise HomeAssistantError(f"Failed to set {label}: {err}") from err
 
 
 class EG4DSTSwitch(CoordinatorEntity[EG4DataUpdateCoordinator], SwitchEntity):

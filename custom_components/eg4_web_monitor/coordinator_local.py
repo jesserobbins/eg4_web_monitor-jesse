@@ -261,6 +261,42 @@ async def _read_generator_power_per_leg(
     )
 
 
+async def _override_reg_110_bits(transport: Any, params: dict[str, Any]) -> None:
+    """Override ECO Mode and Green Mode from raw register 110 bits.
+
+    pylxpweb maps FUNC_BATTERY_ECO_EN to bit 9 and FUNC_GREEN_EN to bit 8
+    of register 110, but EG4_OFFGRID (12000XP) hardware uses:
+      - bit 15: ECO Mode (confirmed via live Modbus sweep and write)
+      - bit 14: Green Mode (confirmed via luxpower-ha-integration)
+
+    Read register 110 raw, extract the correct bits, and override the
+    wrong values from read_named_parameters().
+    """
+    read_fn = getattr(transport, "read_parameters", None)
+    if read_fn is None:
+        return
+
+    try:
+        raw_data = await read_fn(110, 1)
+    except Exception as err:
+        _LOGGER.warning("Raw register 110 read failed: %s", err)
+        return
+
+    if not raw_data or 110 not in raw_data:
+        return
+
+    raw_110 = raw_data[110]
+    params["FUNC_BATTERY_ECO_EN"] = bool(raw_110 & (1 << 15))
+    params["FUNC_GREEN_EN"] = bool(raw_110 & (1 << 14))
+    params["_raw_reg_110"] = raw_110
+    _LOGGER.debug(
+        "Register 110 raw=0x%04X: ECO(bit15)=%s, Green(bit14)=%s",
+        raw_110,
+        params["FUNC_BATTERY_ECO_EN"],
+        params["FUNC_GREEN_EN"],
+    )
+
+
 class LocalTransportMixin(_MixinBase):
     """Mixin handling local transport operations for the coordinator."""
 
@@ -474,6 +510,11 @@ class LocalTransportMixin(_MixinBase):
 
         except Exception as err:
             _LOGGER.warning("Failed to read parameters from Modbus: %s", err)
+
+        # Override ECO Mode (bit 15) and Green Mode (bit 14) from raw reg 110.
+        # pylxpweb maps FUNC_BATTERY_ECO_EN to bit 9 and FUNC_GREEN_EN to bit 8,
+        # but 12000XP hardware uses bits 15 and 14 respectively.
+        await _override_reg_110_bits(transport, params)
 
         return params
 

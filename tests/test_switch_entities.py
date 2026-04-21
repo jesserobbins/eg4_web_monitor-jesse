@@ -84,6 +84,7 @@ def _mock_coordinator(
     mock_inverter.enable_battery_backup_ctrl = AsyncMock(return_value=True)
     mock_inverter.disable_battery_backup_ctrl = AsyncMock(return_value=True)
     coordinator.get_inverter_object = MagicMock(return_value=mock_inverter)
+    coordinator.write_raw_register = AsyncMock(return_value=True)
 
     # Station device info
     coordinator.get_device_info = MagicMock(return_value=None)
@@ -413,37 +414,35 @@ class TestOffGridModeSwitch:
         assert switch.is_on is False
 
     @pytest.mark.asyncio
-    async def test_turn_on_local(self):
-        """Local transport: writes PARAM_FUNC_GREEN_EN."""
-        coordinator = _mock_coordinator(has_local=True)
+    async def test_turn_on_raw_bit14(self):
+        """Turn on: writes register 110 with bit 14 set."""
+        coordinator = _mock_coordinator(
+            has_local=True,
+            parameters={"_raw_reg_110": 0x0080},  # buzzer bit only
+        )
         switch = EG4OffGridModeSwitch(coordinator, "1234567890")
         _prep(switch)
         await switch.async_turn_on()
 
-        coordinator.write_named_parameter.assert_called_once_with(
-            PARAM_FUNC_GREEN_EN, True, serial="1234567890"
+        coordinator.write_raw_register.assert_called_once_with(
+            110, 0x0080 | (1 << 14), serial="1234567890"
         )
 
     @pytest.mark.asyncio
-    async def test_turn_on_cloud(self):
-        """Cloud only: calls enable_green_mode."""
-        coordinator = _mock_coordinator(has_local=False, has_http=True)
+    async def test_turn_off_raw_bit14(self):
+        """Turn off: writes register 110 with bit 14 cleared."""
+        coordinator = _mock_coordinator(
+            has_local=True,
+            parameters={"_raw_reg_110": 0xC080},  # eco + green + buzzer
+        )
         switch = EG4OffGridModeSwitch(coordinator, "1234567890")
         _prep(switch)
-        await switch.async_turn_on()
+        await switch.async_turn_off()
 
-        inverter = coordinator.get_inverter_object("1234567890")
-        inverter.enable_green_mode.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_no_transport_raises(self):
-        """No local or HTTP raises HomeAssistantError."""
-        coordinator = _mock_coordinator(has_local=False, has_http=False)
-        switch = EG4OffGridModeSwitch(coordinator, "1234567890")
-        _prep(switch)
-
-        with pytest.raises(HomeAssistantError, match="No transport available"):
-            await switch.async_turn_on()
+        # Should clear bit 14 only, leaving bit 15 (eco) + bit 7 (buzzer)
+        coordinator.write_raw_register.assert_called_once_with(
+            110, 0x8080, serial="1234567890"
+        )
 
 
 # ── WorkingModeSwitch ────────────────────────────────────────────────
@@ -587,18 +586,17 @@ class TestCloudFallback:
             await switch.async_turn_on()
 
     @pytest.mark.asyncio
-    async def test_offgrid_local_fail_falls_back_to_cloud(self):
-        """HYBRID: off-grid local write fails -> cloud API called."""
+    async def test_offgrid_raw_write_fail_raises(self):
+        """Off-grid raw write failure raises HomeAssistantError (no cloud fallback)."""
         coordinator = _mock_coordinator(has_local=True, has_http=True)
-        coordinator.write_named_parameter = AsyncMock(
+        coordinator.write_raw_register = AsyncMock(
             side_effect=HomeAssistantError("Modbus timeout")
         )
         switch = EG4OffGridModeSwitch(coordinator, "1234567890")
         _prep(switch)
-        await switch.async_turn_off()
 
-        inverter = coordinator.get_inverter_object("1234567890")
-        inverter.disable_green_mode.assert_called_once()
+        with pytest.raises(HomeAssistantError, match="Failed to set Off-Grid Mode"):
+            await switch.async_turn_off()
 
     @pytest.mark.asyncio
     async def test_working_mode_local_fail_falls_back_to_cloud(self):

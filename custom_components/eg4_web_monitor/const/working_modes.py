@@ -56,6 +56,13 @@ WORKING_MODES = {
         "icon": "mdi:solar-power-variant",
         "entity_category": EntityCategory.CONFIG,
     },
+    "battery_eco_mode": {
+        "name": "Battery ECO Mode",
+        "param": "FUNC_BATTERY_ECO_EN",
+        "description": "Battery economic mode for optimized charge/discharge",
+        "icon": "mdi:leaf",
+        "entity_category": EntityCategory.CONFIG,
+    },
 }
 
 # =============================================================================

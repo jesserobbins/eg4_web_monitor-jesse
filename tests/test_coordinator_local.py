@@ -303,6 +303,92 @@ class TestBuildLocalDeviceData:
         assert result["sensors"]["grid_import_power"] == 500
 
 
+# ── _override_reg_110_bits ────────────────────────────────────────────
+
+
+class TestOverrideReg110Bits:
+    """Test raw register 110 bit override for ECO (bit 15) and Green (bit 14)."""
+
+    async def test_eco_mode_reads_bit_15(self):
+        """ECO mode reads bit 15 of register 110, not pylxpweb's bit 9."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _override_reg_110_bits,
+        )
+
+        transport = MagicMock()
+        # H110 = 0x8080: bit 7 (buzzer) + bit 15 (ECO) set
+        transport.read_parameters = AsyncMock(return_value={110: 0x8080})
+        params: dict = {}
+
+        await _override_reg_110_bits(transport, params)
+
+        assert params["FUNC_BATTERY_ECO_EN"] is True
+        assert params["FUNC_GREEN_EN"] is False
+        assert params["_raw_reg_110"] == 0x8080
+
+    async def test_green_mode_reads_bit_14(self):
+        """Green Mode reads bit 14 of register 110, not pylxpweb's bit 8."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _override_reg_110_bits,
+        )
+
+        transport = MagicMock()
+        # H110 = 0xC080: bit 7 (buzzer) + bit 14 (green) + bit 15 (eco) set
+        transport.read_parameters = AsyncMock(return_value={110: 0xC080})
+        params: dict = {}
+
+        await _override_reg_110_bits(transport, params)
+
+        assert params["FUNC_BATTERY_ECO_EN"] is True
+        assert params["FUNC_GREEN_EN"] is True
+        assert params["_raw_reg_110"] == 0xC080
+
+    async def test_both_off(self):
+        """Neither ECO nor Green set when bits 14-15 are clear."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _override_reg_110_bits,
+        )
+
+        transport = MagicMock()
+        # H110 = 0x0080: only bit 7 (buzzer) set
+        transport.read_parameters = AsyncMock(return_value={110: 0x0080})
+        params: dict = {}
+
+        await _override_reg_110_bits(transport, params)
+
+        assert params["FUNC_BATTERY_ECO_EN"] is False
+        assert params["FUNC_GREEN_EN"] is False
+
+    async def test_skips_when_no_read_fn(self):
+        """Gracefully skips when transport lacks read_parameters."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _override_reg_110_bits,
+        )
+
+        transport = MagicMock(spec=[])
+        params: dict = {}
+
+        await _override_reg_110_bits(transport, params)
+
+        assert "FUNC_BATTERY_ECO_EN" not in params
+
+    async def test_handles_read_failure(self):
+        """Transport read failure is logged but doesn't raise."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _override_reg_110_bits,
+        )
+
+        transport = MagicMock()
+        transport.read_parameters = AsyncMock(
+            side_effect=RuntimeError("modbus timeout")
+        )
+        params: dict = {}
+
+        await _override_reg_110_bits(transport, params)
+
+        assert "FUNC_BATTERY_ECO_EN" not in params
+
+
 # ── _read_ac_couple_registers / _read_ac_input_type ──────────────────────
 
 
@@ -699,8 +785,14 @@ class TestACCoupleParamFallback:
 
         await coordinator._read_modbus_parameters(mock_transport)
 
-        # Raw read should NOT be called since named params returned AC couple keys
-        mock_transport.read_parameters.assert_not_called()
+        # Raw read for AC couple fallback (regs 220-223) should NOT be called
+        # since named params returned AC couple keys. The only read_parameters
+        # call should be for the raw reg 110 override.
+        calls = mock_transport.read_parameters.call_args_list
+        ac_couple_calls = [c for c in calls if c[0][0] == 220]
+        assert len(ac_couple_calls) == 0, (
+            f"AC couple fallback read should not fire, but got: {ac_couple_calls}"
+        )
 
 
 # ── get_local_transport / has_local_transport / is_local_only ────────
