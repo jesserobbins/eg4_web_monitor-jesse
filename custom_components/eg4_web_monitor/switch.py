@@ -612,16 +612,20 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
 
         pylxpweb maps FUNC_BATTERY_ECO_EN to bit 9 but the 12000XP uses
         bit 15 (Modbus sweep confirmed reg 110 = 0x8080 when ECO on).
-        Uses coordinator.write_raw_register for proper hybrid transport lookup.
+        Uses the coordinator's transport helpers which handle reconnection
+        and hybrid-mode inverter lookup.
         """
-        transport = self.coordinator.get_local_transport(self._serial)
-        if transport is None:
-            raise HomeAssistantError(
-                "Battery ECO Mode requires local transport (Modbus/Dongle)"
-            )
-
         self._set_optimistic_state(turn_on)
         try:
+            # Read current reg 110 via the coordinator transport path
+            transport = self.coordinator.get_local_transport(self._serial)
+            if transport is None:
+                raise HomeAssistantError(
+                    "Battery ECO Mode requires local transport (Modbus/Dongle)"
+                )
+            if not transport.is_connected:
+                await transport.connect()
+
             raw_regs = await transport.read_parameters(110, 1)
             current_val = raw_regs.get(110, 0)
             if turn_on:
@@ -629,6 +633,7 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
             else:
                 new_val = current_val & ~(1 << 15)
 
+            # Write via coordinator which handles reconnection
             await self.coordinator.write_raw_register(
                 110, new_val, serial=self._serial
             )
