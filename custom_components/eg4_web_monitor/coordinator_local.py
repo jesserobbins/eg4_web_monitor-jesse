@@ -542,6 +542,11 @@ class LocalTransportMixin(_MixinBase):
                 # as HA sensors — add them here if they are.
                 device_data["sensors"]["generator_power"] = None
 
+        # EG4_OFFGRID: always suppress generator_power (I123 = seconds counter)
+        inv_features = device_data.get("features", {})
+        if inv_features.get("inverter_family") == "EG4_OFFGRID":
+            device_data["sensors"].pop("generator_power", None)
+
         transport = getattr(inverter, "_transport", None)
         if transport and hasattr(transport, "host"):
             device_data["sensors"]["transport_host"] = transport.host
@@ -1116,6 +1121,10 @@ class LocalTransportMixin(_MixinBase):
                     "parallel_master_slave": parallel_master_slave,
                     "parallel_phase": parallel_phase,
                 }
+
+                # EG4_OFFGRID: I123 is a seconds counter, not power
+                if features.get("inverter_family") == "EG4_OFFGRID":
+                    device_data["sensors"].pop("generator_power", None)
 
                 if energy_data:
                     device_data["sensors"].update(
