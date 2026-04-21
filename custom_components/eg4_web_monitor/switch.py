@@ -614,7 +614,8 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
         from coordinator parameter cache, flip bit 15, write back via
         write_raw_register.
         """
-        self._set_optimistic_state(turn_on)
+        self._optimistic_state = turn_on
+        self.async_write_ha_state()
         try:
             # Get current reg 110 value from parameter cache
             params = {}
@@ -647,9 +648,11 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
 
             await asyncio.sleep(0.5)
             await self.coordinator.async_refresh()
-            self._clear_optimistic_state()
+            self._optimistic_state = None
+            self.async_write_ha_state()
         except Exception as err:
-            self._clear_optimistic_state()
+            self._optimistic_state = None
+            self.async_write_ha_state()
             raise HomeAssistantError(
                 f"Failed to set Battery ECO Mode: {err}"
             ) from err
