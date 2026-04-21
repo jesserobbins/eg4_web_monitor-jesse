@@ -389,6 +389,55 @@ class TestOverrideReg110Bits:
         assert "FUNC_BATTERY_ECO_EN" not in params
 
 
+# ── _read_reg_226_export_ac_couple ────────────────────────────────────
+
+
+class TestReadReg226ExportACCouple:
+    """Test raw register 226 read for Export AC Couple (bit 14)."""
+
+    async def test_export_enabled(self):
+        """Bit 14 set → Export AC Couple enabled."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_reg_226_export_ac_couple,
+        )
+
+        transport = MagicMock()
+        transport.read_parameters = AsyncMock(return_value={226: 0x4000})
+        params: dict = {}
+
+        await _read_reg_226_export_ac_couple(transport, params)
+
+        assert params["FUNC_EXPORT_AC_COUPLE"] is True
+        assert params["_raw_reg_226"] == 0x4000
+
+    async def test_export_disabled(self):
+        """Bit 14 clear → Export AC Couple disabled."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_reg_226_export_ac_couple,
+        )
+
+        transport = MagicMock()
+        transport.read_parameters = AsyncMock(return_value={226: 0x0000})
+        params: dict = {}
+
+        await _read_reg_226_export_ac_couple(transport, params)
+
+        assert params["FUNC_EXPORT_AC_COUPLE"] is False
+
+    async def test_skips_when_no_read_fn(self):
+        """Gracefully skips when transport lacks read_parameters."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_reg_226_export_ac_couple,
+        )
+
+        transport = MagicMock(spec=[])
+        params: dict = {}
+
+        await _read_reg_226_export_ac_couple(transport, params)
+
+        assert "FUNC_EXPORT_AC_COUPLE" not in params
+
+
 # ── _read_ac_couple_registers / _read_ac_input_type ──────────────────────
 
 

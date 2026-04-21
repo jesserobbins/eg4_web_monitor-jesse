@@ -297,6 +297,38 @@ async def _override_reg_110_bits(transport: Any, params: dict[str, Any]) -> None
     )
 
 
+async def _read_reg_226_export_ac_couple(
+    transport: Any, params: dict[str, Any]
+) -> None:
+    """Read Export AC Couple from bit 14 of holding register 226.
+
+    Confirmed via live Modbus probe: H226=0x4000 (bit 14 set) when Export
+    AC Couple is enabled in EG4 web UI. Separate from AC Couple enable
+    (H179 bit 11).
+    """
+    read_fn = getattr(transport, "read_parameters", None)
+    if read_fn is None:
+        return
+
+    try:
+        raw_data = await read_fn(226, 1)
+    except Exception as err:
+        _LOGGER.warning("Raw register 226 read failed: %s", err)
+        return
+
+    if not raw_data or 226 not in raw_data:
+        return
+
+    raw_226 = raw_data[226]
+    params["FUNC_EXPORT_AC_COUPLE"] = bool(raw_226 & (1 << 14))
+    params["_raw_reg_226"] = raw_226
+    _LOGGER.debug(
+        "Register 226 raw=0x%04X: Export AC Couple(bit14)=%s",
+        raw_226,
+        params["FUNC_EXPORT_AC_COUPLE"],
+    )
+
+
 class LocalTransportMixin(_MixinBase):
     """Mixin handling local transport operations for the coordinator."""
 
@@ -515,6 +547,9 @@ class LocalTransportMixin(_MixinBase):
         # pylxpweb maps FUNC_BATTERY_ECO_EN to bit 9 and FUNC_GREEN_EN to bit 8,
         # but 12000XP hardware uses bits 15 and 14 respectively.
         await _override_reg_110_bits(transport, params)
+
+        # Read Export AC Couple (bit 14 of register 226).
+        await _read_reg_226_export_ac_couple(transport, params)
 
         return params
 

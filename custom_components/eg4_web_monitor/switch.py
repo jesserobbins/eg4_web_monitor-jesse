@@ -564,15 +564,20 @@ class EG4WorkingModeSwitch(EG4BaseSwitch):
         param = self._mode_config["param"]
 
         # Raw register bit-toggle for modes where pylxpweb's named parameter
-        # mapping uses the wrong bit position (ECO=bit15 of H110).
-        if param == "FUNC_BATTERY_ECO_EN":
+        # mapping uses the wrong bit position or doesn't exist.
+        _RAW_BIT_TOGGLES = {
+            "FUNC_BATTERY_ECO_EN": (110, 15, "_raw_reg_110", "Battery ECO Mode"),
+            "FUNC_EXPORT_AC_COUPLE": (226, 14, "_raw_reg_226", "Export AC Couple"),
+        }
+        if param in _RAW_BIT_TOGGLES:
+            register, bit, cache_key, label = _RAW_BIT_TOGGLES[param]
             await self._execute_raw_bit_toggle(
-                register=110,
-                bit=15,
+                register=register,
+                bit=bit,
                 turn_on=turn_on,
-                param_key="FUNC_BATTERY_ECO_EN",
-                raw_cache_key="_raw_reg_110",
-                label="Battery ECO Mode",
+                param_key=param,
+                raw_cache_key=cache_key,
+                label=label,
             )
             return
 
