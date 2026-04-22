@@ -36,12 +36,15 @@ from .const import (
     DOMAIN,
 )
 from .coordinator_local import (
+    _override_reg_110_bits,
     _read_ac_couple_energy,
     _read_ac_couple_registers,
     _read_ac_input_type,
     _read_consumption_power,
     _read_generator_power_per_leg,
     _read_load_power,
+    _read_reg_179_ac_couple_mode,
+    _read_reg_226_export_ac_couple,
 )
 from .coordinator_mappings import (
     _build_individual_battery_mapping,
@@ -251,6 +254,12 @@ class HTTPUpdateMixin(_MixinBase):
                     await _read_consumption_power(transport, device_data["sensors"])
                     await _read_load_power(transport, device_data["sensors"])
                     await _read_generator_power_per_leg(transport, device_data["sensors"])
+                    # Override parameter bits that pylxpweb maps incorrectly
+                    params = data.get("parameters", {}).get(serial, {})
+                    if params:
+                        await _override_reg_110_bits(transport, params)
+                        await _read_reg_179_ac_couple_mode(transport, params)
+                        await _read_reg_226_export_ac_couple(transport, params)
             else:
                 device_data["sensors"]["connection_transport"] = "Cloud"
 
