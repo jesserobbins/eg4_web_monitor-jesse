@@ -92,6 +92,32 @@ _GRIDBOSS_PG_OVERLAY: dict[str, str] = {
     # the simple key-to-key overlay cannot handle.
 }
 
+# Transport-exclusive sensor overlay: maps (sensor_key, runtime_attr) for
+# Modbus-only registers not provided by the cloud API.
+_TRANSPORT_OVERLAY: tuple[tuple[str, str], ...] = (
+    ("bt_temperature", "temperature_t1"),
+    ("grid_current_l1", "inverter_rms_current_r"),
+    ("grid_current_l2", "inverter_rms_current_s"),
+    ("grid_current_l3", "inverter_rms_current_t"),
+    ("battery_current", "battery_current"),
+    # Split-phase voltages (I193/I194 grid, I127/I128 EPS)
+    ("grid_voltage_l1", "grid_l1_voltage"),
+    ("grid_voltage_l2", "grid_l2_voltage"),
+    ("eps_voltage_l1", "eps_l1_voltage"),
+    ("eps_voltage_l2", "eps_l2_voltage"),
+    # Split-phase EPS power (I129/I130)
+    ("eps_power_l1", "eps_l1_power"),
+    ("eps_power_l2", "eps_l2_power"),
+)
+
+# Transport-exclusive energy overlay: per-leg EPS energy from regs 133-138.
+_ENERGY_OVERLAY: tuple[tuple[str, str], ...] = (
+    ("eps_energy_today_l1", "eps_l1_energy_today"),
+    ("eps_energy_today_l2", "eps_l2_energy_today"),
+    ("eps_energy_total_l1", "eps_l1_energy_total"),
+    ("eps_energy_total_l2", "eps_l2_energy_total"),
+)
+
 
 def apply_gridboss_overlay(
     pg_sensors: dict[str, Any],
@@ -661,21 +687,6 @@ class DeviceProcessingMixin(_MixinBase):
         transport_runtime = getattr(inverter, "_transport_runtime", None)
         if transport_runtime is not None:
             sensors = processed["sensors"]
-            _TRANSPORT_OVERLAY = (
-                ("bt_temperature", "temperature_t1"),
-                ("grid_current_l1", "inverter_rms_current_r"),
-                ("grid_current_l2", "inverter_rms_current_s"),
-                ("grid_current_l3", "inverter_rms_current_t"),
-                ("battery_current", "battery_current"),
-                # Split-phase voltages (I193/I194 grid, I127/I128 EPS)
-                ("grid_voltage_l1", "grid_l1_voltage"),
-                ("grid_voltage_l2", "grid_l2_voltage"),
-                ("eps_voltage_l1", "eps_l1_voltage"),
-                ("eps_voltage_l2", "eps_l2_voltage"),
-                # Split-phase EPS power (I129/I130)
-                ("eps_power_l1", "eps_l1_power"),
-                ("eps_power_l2", "eps_l2_power"),
-            )
             for sensor_key, runtime_attr in _TRANSPORT_OVERLAY:
                 value = getattr(transport_runtime, runtime_attr, None)
                 if value is not None:
@@ -694,12 +705,6 @@ class DeviceProcessingMixin(_MixinBase):
         transport_energy = getattr(inverter, "_transport_energy", None)
         if transport_energy is not None:
             sensors = processed["sensors"]
-            _ENERGY_OVERLAY = (
-                ("eps_energy_today_l1", "eps_l1_energy_today"),
-                ("eps_energy_today_l2", "eps_l2_energy_today"),
-                ("eps_energy_total_l1", "eps_l1_energy_total"),
-                ("eps_energy_total_l2", "eps_l2_energy_total"),
-            )
             for sensor_key, energy_attr in _ENERGY_OVERLAY:
                 value = getattr(transport_energy, energy_attr, None)
                 if value is not None:
