@@ -670,11 +670,27 @@ class DeviceProcessingMixin(_MixinBase):
                 # load_power (I170, Pload) — cloud API zeroes this for OFFGRID,
                 # but Modbus register 170 has the real value.
                 ("load_power", "load_power"),
+                # Split-phase voltages (I193/I194 grid, I127/I128 EPS)
+                ("grid_voltage_l1", "grid_l1_voltage"),
+                ("grid_voltage_l2", "grid_l2_voltage"),
+                ("eps_voltage_l1", "eps_l1_voltage"),
+                ("eps_voltage_l2", "eps_l2_voltage"),
+                # Split-phase EPS power (I129/I130)
+                ("eps_power_l1", "eps_l1_power"),
+                ("eps_power_l2", "eps_l2_power"),
             )
             for sensor_key, runtime_attr in _TRANSPORT_OVERLAY:
                 value = getattr(transport_runtime, runtime_attr, None)
                 if value is not None:
                     sensors[sensor_key] = value
+
+            # Recompute eps_load_power from overlaid per-leg values.
+            # The sum derivation in _build_runtime_sensor_mapping() only runs
+            # in the local path — hybrid mode needs its own recomputation.
+            l1 = sensors.get("eps_power_l1")
+            l2 = sensors.get("eps_power_l2")
+            if l1 is not None or l2 is not None:
+                sensors["eps_load_power"] = (l1 or 0) + (l2 or 0)
 
         # Overlay transport-exclusive energy sensors (Modbus-only, regs 133-138).
         # Cloud API does not provide per-leg EPS energy; only available via Modbus.

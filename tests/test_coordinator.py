@@ -4733,6 +4733,64 @@ class TestHybridTransportExclusiveSensors:
         # Only non-None values from transport overlay should appear
         assert sensors["grid_current_l1"] == 4.5
 
+    async def test_transport_runtime_populates_l1l2_voltages(
+        self, hass, mock_config_entry
+    ):
+        """L1/L2 grid and EPS voltages overlay from transport_runtime."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        mock_inverter = MagicMock()
+        mock_inverter.serial_number = "1111111111"
+        mock_inverter.model = "12000XP"
+        mock_inverter.firmware_version = "2.0.0"
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter.detect_features = AsyncMock()
+        mock_inverter._transport = MagicMock()
+
+        mock_runtime = MagicMock()
+        mock_runtime.grid_l1_voltage = 123.6
+        mock_runtime.grid_l2_voltage = 122.9
+        mock_runtime.eps_l1_voltage = 122.3
+        mock_runtime.eps_l2_voltage = 123.0
+        mock_inverter._transport_runtime = mock_runtime
+
+        result = await coordinator._process_inverter_object(mock_inverter)
+        sensors = result["sensors"]
+
+        assert sensors["grid_voltage_l1"] == 123.6
+        assert sensors["grid_voltage_l2"] == 122.9
+        assert sensors["eps_voltage_l1"] == 122.3
+        assert sensors["eps_voltage_l2"] == 123.0
+
+    async def test_transport_runtime_populates_eps_power_per_leg(
+        self, hass, mock_config_entry
+    ):
+        """EPS per-leg power overlay enables eps_load_power sum derivation."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        mock_inverter = MagicMock()
+        mock_inverter.serial_number = "1111111111"
+        mock_inverter.model = "12000XP"
+        mock_inverter.firmware_version = "2.0.0"
+        mock_inverter.refresh = AsyncMock()
+        mock_inverter.detect_features = AsyncMock()
+        mock_inverter._transport = MagicMock()
+
+        mock_runtime = MagicMock()
+        mock_runtime.eps_l1_power = 1031
+        mock_runtime.eps_l2_power = 296
+        mock_inverter._transport_runtime = mock_runtime
+
+        result = await coordinator._process_inverter_object(mock_inverter)
+        sensors = result["sensors"]
+
+        assert sensors["eps_power_l1"] == 1031
+        assert sensors["eps_power_l2"] == 296
+        # eps_load_power sum must be recomputed from overlaid values
+        assert sensors["eps_load_power"] == 1327
+
 
 class TestHybridParallelBatteryCountOverride:
     """Test parallel_battery_count override from member inverter data in HTTP path."""
