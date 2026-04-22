@@ -4658,10 +4658,10 @@ class TestHybridTransportExclusiveSensors:
         assert sensors["grid_current_l3"] == 4.1
         assert sensors["battery_current"] == 12.5
 
-    async def test_transport_runtime_populates_load_power(
+    async def test_transport_runtime_does_not_overlay_load_power(
         self, hass, mock_config_entry
     ):
-        """load_power from transport_runtime (I170) overlays into sensors."""
+        """load_power no longer in overlay (uses direct I170 read instead)."""
         mock_config_entry.add_to_hass(hass)
         coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
 
@@ -4673,14 +4673,24 @@ class TestHybridTransportExclusiveSensors:
         mock_inverter.detect_features = AsyncMock()
         mock_inverter._transport = MagicMock()
 
+        # Set transport_runtime.load_power to a distinctive value
         mock_runtime = MagicMock()
         mock_runtime.load_power = 3788
+        # Ensure other overlay attrs return None so they don't mask failures
+        mock_runtime.grid_l1_voltage = None
+        mock_runtime.grid_l2_voltage = None
+        mock_runtime.eps_l1_voltage = None
+        mock_runtime.eps_l2_voltage = None
+        mock_runtime.eps_l1_power = None
+        mock_runtime.eps_l2_power = None
         mock_inverter._transport_runtime = mock_runtime
 
         result = await coordinator._process_inverter_object(mock_inverter)
         sensors = result["sensors"]
 
-        assert sensors["load_power"] == 3788
+        # load_power must NOT be 3788 — overlay should no longer touch it.
+        # The real value comes from _read_load_power() direct register read.
+        assert sensors.get("load_power") != 3788
 
     async def test_no_transport_runtime_skips_overlay(self, hass, mock_config_entry):
         """Without _transport_runtime, overlay is skipped entirely."""

@@ -773,6 +773,53 @@ class TestReadConsumptionPower:
         assert "consumption_power" not in sensors
 
 
+class TestReadLoadPower:
+    """Test direct register read for load power (register 170, Pload)."""
+
+    async def test_reads_load_power(self):
+        """Reads register 170 and populates load_power."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_load_power,
+        )
+
+        transport = MagicMock()
+        transport._read_input_registers = AsyncMock(return_value=[3788])
+        sensors: dict = {}
+
+        await _read_load_power(transport, sensors)
+
+        assert sensors["load_power"] == 3788
+
+    async def test_skips_when_no_read_fn(self):
+        """Gracefully skips when transport lacks _read_input_registers."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_load_power,
+        )
+
+        transport = MagicMock(spec=[])
+        sensors: dict = {}
+
+        await _read_load_power(transport, sensors)
+
+        assert "load_power" not in sensors
+
+    async def test_handles_read_failure(self):
+        """Transport read failure is logged but doesn't raise."""
+        from custom_components.eg4_web_monitor.coordinator_local import (
+            _read_load_power,
+        )
+
+        transport = MagicMock()
+        transport._read_input_registers = AsyncMock(
+            side_effect=RuntimeError("modbus timeout")
+        )
+        sensors: dict = {}
+
+        await _read_load_power(transport, sensors)
+
+        assert "load_power" not in sensors
+
+
 # ── Voltage aliasing in _process_single_local_device ─────────────────
 
 

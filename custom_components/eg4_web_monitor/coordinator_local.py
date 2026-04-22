@@ -221,6 +221,30 @@ async def _read_consumption_power(transport: Any, sensors: dict[str, Any]) -> No
     _LOGGER.debug("Consumption power: reg234=%dW", regs[0])
 
 
+async def _read_load_power(transport: Any, sensors: dict[str, Any]) -> None:
+    """Read load power from input register 170 (Pload).
+
+    pylxpweb maps load_power to register 27 (power_to_user / pToUser),
+    which is grid import power — NOT total consumption load.
+    Register 170 is the actual Pload measurement.
+    """
+    read_fn = getattr(transport, "_read_input_registers", None)
+    if read_fn is None:
+        return
+
+    try:
+        regs = await read_fn(170, 1)
+    except Exception as err:
+        _LOGGER.warning("Load power register 170 read failed: %s", err)
+        return
+
+    if not regs or len(regs) < 1:
+        return
+
+    sensors["load_power"] = regs[0]
+    _LOGGER.debug("Load power: reg170=%dW", regs[0])
+
+
 async def _read_generator_power_per_leg(
     transport: Any, sensors: dict[str, Any]
 ) -> None:
@@ -645,6 +669,7 @@ class LocalTransportMixin(_MixinBase):
             await _read_ac_input_type(static_transport, device_data["sensors"])
             await _read_ac_couple_energy(static_transport, device_data["sensors"])
             await _read_consumption_power(static_transport, device_data["sensors"])
+            await _read_load_power(static_transport, device_data["sensors"])
             await _read_generator_power_per_leg(
                 static_transport, device_data["sensors"]
             )
@@ -1318,6 +1343,7 @@ class LocalTransportMixin(_MixinBase):
                     await _read_ac_input_type(transport_obj, sensors)
                     await _read_ac_couple_energy(transport_obj, sensors)
                     await _read_consumption_power(transport_obj, sensors)
+                    await _read_load_power(transport_obj, sensors)
                     await _read_generator_power_per_leg(transport_obj, sensors)
 
                 # Add last_polled timestamp so users can see when data was last fetched

@@ -41,6 +41,7 @@ from .coordinator_local import (
     _read_ac_input_type,
     _read_consumption_power,
     _read_generator_power_per_leg,
+    _read_load_power,
 )
 from .coordinator_mappings import (
     _build_individual_battery_mapping,
@@ -248,6 +249,7 @@ class HTTPUpdateMixin(_MixinBase):
                     await _read_ac_input_type(transport, device_data["sensors"])
                     await _read_ac_couple_energy(transport, device_data["sensors"])
                     await _read_consumption_power(transport, device_data["sensors"])
+                    await _read_load_power(transport, device_data["sensors"])
                     await _read_generator_power_per_leg(transport, device_data["sensors"])
             else:
                 device_data["sensors"]["connection_transport"] = "Cloud"

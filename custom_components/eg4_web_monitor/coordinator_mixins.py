@@ -667,9 +667,6 @@ class DeviceProcessingMixin(_MixinBase):
                 ("grid_current_l2", "inverter_rms_current_s"),
                 ("grid_current_l3", "inverter_rms_current_t"),
                 ("battery_current", "battery_current"),
-                # load_power (I170, Pload) — cloud API zeroes this for OFFGRID,
-                # but Modbus register 170 has the real value.
-                ("load_power", "load_power"),
                 # Split-phase voltages (I193/I194 grid, I127/I128 EPS)
                 ("grid_voltage_l1", "grid_l1_voltage"),
                 ("grid_voltage_l2", "grid_l2_voltage"),
