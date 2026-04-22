@@ -226,6 +226,24 @@ class TestSwitchPlatformSetup:
         assert "battery_eco_mode" in mode_keys
 
     @pytest.mark.asyncio
+    async def test_offgrid_suppresses_green_mode(self, hass):
+        """Off-Grid Mode (Green Mode) switch suppressed for EG4_OFFGRID."""
+        coordinator = _mock_coordinator(
+            model="12000XP",
+            device_data={
+                "features": {"inverter_family": "EG4_OFFGRID"},
+            },
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        type_names = [type(e).__name__ for e in entities]
+        assert "EG4OffGridModeSwitch" not in type_names
+
+    @pytest.mark.asyncio
     async def test_setup_creates_dst_switch_with_station(self, hass):
         """Station data present -> DST switch created."""
         coordinator = _mock_coordinator(station_data={"daylightSavingTime": True})

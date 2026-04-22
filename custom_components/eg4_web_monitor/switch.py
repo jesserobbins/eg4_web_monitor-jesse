@@ -149,11 +149,14 @@ async def async_setup_entry(
                         serial,
                     )
 
-                # Add off-grid mode switch (Green Mode)
-                entities.append(EG4OffGridModeSwitch(coordinator, serial))
+                # Extract family early — needed for Green Mode and working mode gating
+                family = (device_data.get("features") or {}).get("inverter_family")
+
+                # Add off-grid mode switch (Green Mode) — not configurable on OFFGRID
+                if family != INVERTER_FAMILY_EG4_OFFGRID:
+                    entities.append(EG4OffGridModeSwitch(coordinator, serial))
 
                 # Add working mode switches
-                family = (device_data.get("features") or {}).get("inverter_family")
                 for mode_key, mode_config in WORKING_MODES.items():
                     # EG4_OFFGRID: suppress grid-tied modes (peak shaving,
                     # forced discharge) — these require grid connection.
