@@ -63,13 +63,6 @@ WORKING_MODES = {
         "icon": "mdi:leaf",
         "entity_category": EntityCategory.CONFIG,
     },
-    "export_ac_couple": {
-        "name": "Export AC Couple",
-        "param": "FUNC_EXPORT_AC_COUPLE",
-        "description": "Allow AC coupled solar to export power",
-        "icon": "mdi:solar-power-variant-outline",
-        "entity_category": EntityCategory.CONFIG,
-    },
 }
 
 # =============================================================================
@@ -86,5 +79,4 @@ FUNCTION_PARAM_MAPPING = {
     "FUNC_SET_TO_STANDBY": "FUNC_SET_TO_STANDBY",
     "FUNC_179_BIT11": "FUNC_179_BIT11",
     "FUNC_BATTERY_ECO_EN": "FUNC_BATTERY_ECO_EN",
-    "FUNC_EXPORT_AC_COUPLE": "FUNC_EXPORT_AC_COUPLE",
 }

@@ -469,7 +469,6 @@ _WORKING_MODE_PARAMETERS: dict[str, str | None] = {
     # Raw bit-toggle modes — use raw register r/w, not named parameters.
     # Truthy values needed so local-only mode doesn't skip entity creation.
     "FUNC_BATTERY_ECO_EN": "FUNC_BATTERY_ECO_EN",  # Register 110, bit 15
-    "FUNC_EXPORT_AC_COUPLE": "FUNC_EXPORT_AC_COUPLE",  # Register 226, bit 14
 }
 
 # Raw register bit-toggle mapping for modes where pylxpweb's named parameter
@@ -477,7 +476,6 @@ _WORKING_MODE_PARAMETERS: dict[str, str | None] = {
 # Format: param -> (register, bit, raw_cache_key, label)
 _RAW_BIT_TOGGLES: dict[str, tuple[int, int, str, str]] = {
     "FUNC_BATTERY_ECO_EN": (110, 15, "_raw_reg_110", "Battery ECO Mode"),
-    "FUNC_EXPORT_AC_COUPLE": (226, 14, "_raw_reg_226", "Export AC Couple"),
     "FUNC_179_BIT11": (179, 11, "_raw_reg_179", "AC Coupling Mode"),
 }
 

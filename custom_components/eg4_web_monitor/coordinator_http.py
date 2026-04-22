@@ -44,7 +44,6 @@ from .coordinator_local import (
     _read_generator_power_per_leg,
     _read_load_power,
     _read_reg_179_ac_couple_mode,
-    _read_reg_226_export_ac_couple,
 )
 from .coordinator_mappings import (
     _build_individual_battery_mapping,
@@ -259,7 +258,6 @@ class HTTPUpdateMixin(_MixinBase):
                     if params:
                         await _override_reg_110_bits(transport, params)
                         await _read_reg_179_ac_couple_mode(transport, params)
-                        await _read_reg_226_export_ac_couple(transport, params)
             else:
                 device_data["sensors"]["connection_transport"] = "Cloud"
 
