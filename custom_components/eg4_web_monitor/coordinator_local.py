@@ -201,7 +201,7 @@ async def _scan_for_ac_couple_energy_registers(read_fn: Any) -> None:
     40-register boundaries). Logs at INFO level so results surface without
     requiring DEBUG-level filter on the logs.
     """
-    _LOGGER.warning("ACCSCAN: starting one-shot scan for AC couple energy registers")
+    _LOGGER.info("ACCSCAN: starting one-shot scan for AC couple energy registers")
     today_targets = {1, 10, 100, 1000}
     today_tolerance = 50  # allow raw value within ±50 of target
     lifetime_single = {338, 3379, 3380, 33790, 337900}
@@ -212,10 +212,10 @@ async def _scan_for_ac_couple_energy_registers(read_fn: Any) -> None:
         try:
             block = await read_fn(start, 40)
         except Exception as err:
-            _LOGGER.warning("ACCSCAN: block %d-%d failed: %s", start, start + 39, err)
+            _LOGGER.info("ACCSCAN: block %d-%d failed: %s", start, start + 39, err)
             continue
         if not block:
-            _LOGGER.warning("ACCSCAN: block %d-%d empty", start, start + 39)
+            _LOGGER.info("ACCSCAN: block %d-%d empty", start, start + 39)
             continue
         for i, val in enumerate(block):
             all_regs[start + i] = val
