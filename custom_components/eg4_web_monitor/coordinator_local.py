@@ -158,11 +158,10 @@ async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> Non
     # Scan once per process: look for registers whose values match the
     # cloud-derived AC couple energy today and lifetime. Targets chosen
     # from field observation: today ≈ 1.0 kWh, lifetime ≈ 338 kWh.
-    # Results are logged at WARNING level so they surface in system_log.
-    # Run as a background task to avoid blocking the coordinator refresh.
+    # Results are logged at INFO level once, then throttled back to DEBUG.
     if not getattr(_read_ac_couple_energy, "_scan_done", False):
         setattr(_read_ac_couple_energy, "_scan_done", True)
-        asyncio.create_task(_scan_for_ac_couple_energy_registers(read_fn))
+        await _scan_for_ac_couple_energy_registers(read_fn)
 
     if not _LOGGER.isEnabledFor(logging.DEBUG):
         return
@@ -220,7 +219,7 @@ async def _scan_for_ac_couple_energy_registers(read_fn: Any) -> None:
             continue
         for i, val in enumerate(block):
             all_regs[start + i] = val
-        _LOGGER.warning(
+        _LOGGER.info(
             "ACCSCAN: block %d-%d read %d registers",
             start,
             start + 39,
@@ -256,21 +255,21 @@ async def _scan_for_ac_couple_energy_registers(read_fn: Any) -> None:
         if abs(val_be - 337900) <= 5000:
             pair_matches.append((addr, val_be, 1))
 
-    _LOGGER.warning(
+    _LOGGER.info(
         "ACCSCAN: today-candidates (raw near 1/10/100/1000): %s",
         today_matches or "none",
     )
-    _LOGGER.warning(
+    _LOGGER.info(
         "ACCSCAN: lifetime-single-candidates (raw near 338/3379/33790/337900): %s",
         lifetime_matches or "none",
     )
-    _LOGGER.warning(
+    _LOGGER.info(
         "ACCSCAN: lifetime-pair-candidates (32-bit ~337900, le=0/be=1): %s",
         pair_matches or "none",
     )
     # Dump all non-zero registers for manual inspection
     nonzero = {a: v for a, v in all_regs.items() if v != 0}
-    _LOGGER.warning(
+    _LOGGER.info(
         "ACCSCAN: all non-zero registers (%d of %d): %s",
         len(nonzero),
         len(all_regs),
