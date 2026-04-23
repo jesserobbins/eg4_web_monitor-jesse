@@ -277,35 +277,6 @@ async def _scan_for_ac_couple_energy_registers(read_fn: Any) -> None:
         nonzero,
     )
 
-    # Delta scan: wait 10 minutes, scan again, log registers that changed.
-    # Accumulators (energy counters) change; constants (firmware, config) don't.
-    _LOGGER.warning("ACCSCAN: waiting 600s for delta scan")
-    await asyncio.sleep(600)
-    second_regs: dict[int, int] = {}
-    for start in range(0, 240, 40):
-        try:
-            block = await read_fn(start, 40)
-        except Exception as err:
-            _LOGGER.warning("ACCSCAN-DELTA: block %d-%d failed: %s", start, start + 39, err)
-            continue
-        if not block:
-            continue
-        for i, val in enumerate(block):
-            second_regs[start + i] = val
-
-    deltas: dict[int, tuple[int, int, int]] = {}
-    for addr, before in all_regs.items():
-        after = second_regs.get(addr)
-        if after is None or after == before:
-            continue
-        deltas[addr] = (before, after, after - before)
-
-    _LOGGER.warning(
-        "ACCSCAN-DELTA: %d registers changed: %s",
-        len(deltas),
-        deltas,
-    )
-
 
 async def _read_ac_input_type(transport: Any, sensors: dict[str, Any]) -> None:
     """Read AC input type from input register 77 (bit 0: 0=Grid, 1=Generator).
