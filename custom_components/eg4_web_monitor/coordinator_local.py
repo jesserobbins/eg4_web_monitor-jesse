@@ -133,20 +133,25 @@ async def _read_ac_couple_registers(transport: Any, sensors: dict[str, Any]) -> 
 
 
 async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> None:
-    """Read AC couple energy from registers 124-126 with correct scale for OFFGRID.
+    """Read AC couple energy register 124 for debug only — does not write sensors.
 
-    On EG4_OFFGRID, registers 124-126 store AC couple energy in raw watt-hours.
-    pylxpweb annotates these as DIV_10 (0.1 kWh), which gives 100x wrong values.
-    Only populate when ac_input_type == "Grid" (AC couple active, not generator).
+    Originally registers 124-126 were assumed to be AC couple energy on
+    EG4_OFFGRID firmware (today in Wh, lifetime as 32-bit Wh). Field testing
+    on a 12000XP showed both values are unreliable:
 
-    Register 124: energy today (raw Wh, ÷1000 = kWh)
-    Registers 125-126: energy total (32-bit raw Wh, ÷1000 = kWh)
+    * Register 124 ("today"): observed value drifts by only ~0.25 kWh/day
+      while AC coupling actually produces 10+ kWh/day. Not a daily counter.
+    * Registers 125-126 ("total"): observed a 16,777 kWh jump (= 2^24 / 1000)
+      between consecutive readings — classic 24-bit overflow, suggesting the
+      high register is not the upper 16 bits of a single 32-bit accumulator.
+
+    For OFFGRID in hybrid mode, the cloud-derived value
+    (cloud_today_usage − energy_balance) computed in coordinator_mixins.py
+    owns ac_couple_energy_today / ac_couple_energy_total. This function is
+    kept as a no-op to preserve call-site stability and to optionally log
+    the raw values when debug logging is enabled.
     """
-    # Only bail if we explicitly know the port is on Generator. If ac_input_type
-    # is missing from the dict (register 77 read failed or returned empty), fall
-    # through and read the energy — on OFFGRID with AC coupling configured, the
-    # registers reflect AC couple energy regardless.
-    if sensors.get("ac_input_type") == "Generator":
+    if not _LOGGER.isEnabledFor(logging.DEBUG):
         return
 
     read_fn = getattr(transport, "_read_input_registers", None)
@@ -156,7 +161,7 @@ async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> Non
     try:
         regs = await read_fn(124, 3)
     except Exception as err:
-        _LOGGER.warning("AC couple energy registers 124-126 read failed: %s", err)
+        _LOGGER.debug("AC couple energy registers 124-126 read failed: %s", err)
         return
 
     if not regs or len(regs) < 3:
@@ -165,11 +170,12 @@ async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> Non
     today = regs[0] / 1000.0
     total_raw = regs[1] | (regs[2] << 16)
     total = total_raw / 1000.0
-    sensors["ac_couple_energy_today"] = round(today, 3)
-    sensors["ac_couple_energy_total"] = round(total, 3)
     _LOGGER.debug(
-        "AC couple energy: today=%.3f kWh, total=%.3f kWh (raw: %s)",
+        "AC couple energy (raw, NOT written to sensors): "
+        "today_reg=%d (%.3f kWh), total_raw=%d (%.3f kWh), regs=%s",
+        regs[0],
         today,
+        total_raw,
         total,
         regs,
     )
