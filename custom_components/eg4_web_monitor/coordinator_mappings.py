@@ -282,8 +282,7 @@ INVERTER_COMPUTED_KEYS: frozenset[str] = frozenset(
         "grid_import_power",
         "grid_voltage",
         "eps_voltage",
-        # AC couple energy derived from cloud consumption - energy balance
-        # (set conditionally in coordinator_mixins hybrid override)
+        # AC couple energy from registers 124-126 (Egen_day, Egen_all)
         "ac_couple_energy_today",
         "ac_couple_energy_total",
     }
@@ -1082,7 +1081,6 @@ def _features_from_family(
             "supports_volt_watt_curve": False,
             "supports_ac_couple_per_leg": False,
             "supports_inverter_board_temps": False,
-            "supports_ac_couple_energy_derived": True,
         }
 
     # EG4_HYBRID (18kPV, 12kPV, FlexBOSS): US split-phase, volt-watt

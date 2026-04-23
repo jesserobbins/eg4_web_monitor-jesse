@@ -563,7 +563,7 @@ class DeviceProcessingMixin(_MixinBase):
         processed["sensors"] = _map_device_properties(inverter, property_map)
 
         # Seed AC couple energy keys so sensor platform discovers them on first
-        # refresh, even before the transport is attached (hybrid override below).
+        # refresh, before registers 124-126 are read in coordinator_local.
         processed["sensors"].setdefault("ac_couple_energy_today", None)
         processed["sensors"].setdefault("ac_couple_energy_total", None)
 
@@ -594,47 +594,9 @@ class DeviceProcessingMixin(_MixinBase):
                 sensors.get("grid_export_lifetime"),
             )
 
-            # Derive AC couple energy from cloud consumption minus energy balance.
-            # The cloud's todayUsage/totalUsage includes AC couple; energy balance
-            # does not.  The difference is the AC couple energy contribution.
-            # Always seed keys so the sensor platform discovers them on first refresh.
-            sensors.setdefault("ac_couple_energy_today", None)
-            sensors.setdefault("ac_couple_energy_total", None)
-            cloud_energy = getattr(inverter, "_energy", None)
-            _LOGGER.debug(
-                "AC couple energy derivation: _energy=%s, eb_today=%s, eb_lifetime=%s",
-                cloud_energy is not None,
-                eb_today,
-                eb_lifetime,
-            )
-            if cloud_energy is not None:
-                from pylxpweb.constants import scale_energy_value
-
-                cloud_today = scale_energy_value(
-                    "todayUsage", cloud_energy.todayUsage, to_kwh=True
-                )
-                cloud_lifetime = scale_energy_value(
-                    "totalUsage", cloud_energy.totalUsage, to_kwh=True
-                )
-                _LOGGER.debug(
-                    "AC couple energy: cloud_today=%s, cloud_lifetime=%s",
-                    cloud_today,
-                    cloud_lifetime,
-                )
-                if (
-                    cloud_today is not None
-                    and eb_today is not None
-                ):
-                    sensors["ac_couple_energy_today"] = max(
-                        0.0, cloud_today - eb_today
-                    )
-                if (
-                    cloud_lifetime is not None
-                    and eb_lifetime is not None
-                ):
-                    sensors["ac_couple_energy_total"] = max(
-                        0.0, cloud_lifetime - eb_lifetime
-                    )
+            # AC couple energy comes from Modbus registers 124-126 (Egen_day,
+            # Egen_all L/H), read in _read_ac_couple_power().  No cloud
+            # derivation needed.
 
             sensors["consumption"] = eb_today
             sensors["consumption_lifetime"] = eb_lifetime
@@ -1043,7 +1005,7 @@ class DeviceProcessingMixin(_MixinBase):
         if family == "EG4_OFFGRID":
             features["supports_ac_couple_per_leg"] = False
             features["supports_inverter_board_temps"] = False
-            features["supports_ac_couple_energy_derived"] = True
+            # AC couple energy now read from registers 124-126 in coordinator_local
 
         return features
 

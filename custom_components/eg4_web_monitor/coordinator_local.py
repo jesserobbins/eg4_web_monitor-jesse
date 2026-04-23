@@ -127,10 +127,31 @@ async def _read_ac_couple_registers(
     except Exception as err:
         _LOGGER.warning("AC couple power registers 206-207 read failed: %s", err)
 
-    # NOTE: Registers 124-126 are generator energy (Egen_day, Egen_all L/H),
-    # NOT AC couple energy. There are no dedicated AC couple energy registers
-    # in the Modbus spec. Use HA's Riemann sum integration helper to derive
-    # energy from the ac_couple_power sensor (register 153) instead.
+    # --- Energy: regs 124-126 (Egen_day, Egen_all L/H) ---
+    # When AC coupling is active (and no generator connected), these registers
+    # track AC-coupled energy.  The reference implementation (ivanfmartinez/
+    # luxpower-ha-integration) confirms this mapping.  Values are in 0.1 kWh.
+    try:
+        regs_energy = await read_fn(124, 3)
+        if regs_energy and len(regs_energy) >= 3:
+            ac_couple_energy_today = regs_energy[0] / 10.0
+            ac_couple_energy_total = (
+                (regs_energy[2] << 16 | regs_energy[1]) / 10.0
+            )
+            sensors["ac_couple_energy_today"] = ac_couple_energy_today
+            sensors["ac_couple_energy_total"] = ac_couple_energy_total
+            _LOGGER.debug(
+                "AC couple energy: today=%.1fkWh, total=%.1fkWh",
+                ac_couple_energy_today,
+                ac_couple_energy_total,
+            )
+        else:
+            _LOGGER.warning(
+                "AC couple energy: unexpected response from regs 124-126: %s",
+                regs_energy,
+            )
+    except Exception as err:
+        _LOGGER.debug("AC couple energy registers 124-126 read failed: %s", err)
 
 
 async def _read_ac_input_type(

@@ -173,11 +173,9 @@ AC_COUPLE_PER_LEG_SENSORS: frozenset[str] = frozenset(
     }
 )
 
-# AC couple energy sensors derived from cloud consumption minus energy balance
-# EG4_OFFGRID lacks dedicated AC couple energy registers; energy is derived
-# in hybrid mode from cloud todayUsage/totalUsage minus local energy balance.
-# Other families use direct registers (GridBOSS eACcouple* fields).
-AC_COUPLE_ENERGY_DERIVED_SENSORS: frozenset[str] = frozenset(
+# AC couple energy sensors read from Modbus registers 124-126 (Egen_day,
+# Egen_all L/H).  When AC coupling is active, these track AC-coupled energy.
+AC_COUPLE_ENERGY_SENSORS: frozenset[str] = frozenset(
     {
         "ac_couple_energy_today",
         "ac_couple_energy_total",

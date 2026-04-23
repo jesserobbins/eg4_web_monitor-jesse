@@ -21,7 +21,6 @@ from .base_entity import (
     EG4StationEntity,
 )
 from .const import (
-    AC_COUPLE_ENERGY_DERIVED_SENSORS,
     AC_COUPLE_PER_LEG_SENSORS,
     DISCHARGE_RECOVERY_SENSORS,
     INVERTER_BOARD_TEMP_SENSORS,
@@ -83,11 +82,6 @@ def _should_create_sensor(sensor_key: str, features: dict[str, Any] | None) -> b
     # Check inverter board temp sensors (regs 64, 108 — not on EG4_OFFGRID)
     if sensor_key in INVERTER_BOARD_TEMP_SENSORS:
         return bool(features.get("supports_inverter_board_temps", True))
-
-    # AC couple energy derived from cloud consumption minus energy balance
-    # Only on EG4_OFFGRID in hybrid mode (other families have direct registers)
-    if sensor_key in AC_COUPLE_ENERGY_DERIVED_SENSORS:
-        return bool(features.get("supports_ac_couple_energy_derived", False))
 
     # Default: create the sensor
     return True
