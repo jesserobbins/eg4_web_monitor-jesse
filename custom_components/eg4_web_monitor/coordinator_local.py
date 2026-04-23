@@ -151,19 +151,11 @@ async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> Non
     kept as a no-op to preserve call-site stability and to optionally log
     the raw values when debug logging is enabled.
     """
-    read_fn = getattr(transport, "_read_input_registers", None)
-    if read_fn is None:
+    if not _LOGGER.isEnabledFor(logging.DEBUG):
         return
 
-    # Scan once per process: look for registers whose values match the
-    # cloud-derived AC couple energy today and lifetime. Targets chosen
-    # from field observation: today ≈ 1.0 kWh, lifetime ≈ 338 kWh.
-    # Results are logged at INFO level once, then throttled back to DEBUG.
-    if not getattr(_read_ac_couple_energy, "_scan_done", False):
-        setattr(_read_ac_couple_energy, "_scan_done", True)
-        await _scan_for_ac_couple_energy_registers(read_fn)
-
-    if not _LOGGER.isEnabledFor(logging.DEBUG):
+    read_fn = getattr(transport, "_read_input_registers", None)
+    if read_fn is None:
         return
 
     try:
@@ -186,94 +178,6 @@ async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> Non
         total_raw,
         total,
         regs,
-    )
-
-
-async def _scan_for_ac_couple_energy_registers(read_fn: Any) -> None:
-    """One-shot scan: log any register that plausibly matches AC couple energy.
-
-    Targets (from cloud-derived value on 2026-04-23 ~16:20 UTC):
-    * today ≈ 1.0 kWh  → candidate raw values: 1, 10, 100, 1000
-    * lifetime ≈ 338 kWh → candidate raw values: 338, 3380, 33800, 337900,
-      or a 32-bit pair (low/high) that when combined gives ~337900 Wh.
-
-    Scans input registers 0-239 in 40-register chunks (dongle can't cross
-    40-register boundaries). Logs at INFO level so results surface without
-    requiring DEBUG-level filter on the logs.
-    """
-    _LOGGER.info("ACCSCAN: starting one-shot scan for AC couple energy registers")
-    today_targets = {1, 10, 100, 1000}
-    today_tolerance = 50  # allow raw value within ±50 of target
-    lifetime_single = {338, 3379, 3380, 33790, 337900}
-    lifetime_tolerance = 500
-
-    all_regs: dict[int, int] = {}
-    for start in range(0, 240, 40):
-        try:
-            block = await read_fn(start, 40)
-        except Exception as err:
-            _LOGGER.info("ACCSCAN: block %d-%d failed: %s", start, start + 39, err)
-            continue
-        if not block:
-            _LOGGER.info("ACCSCAN: block %d-%d empty", start, start + 39)
-            continue
-        for i, val in enumerate(block):
-            all_regs[start + i] = val
-        _LOGGER.info(
-            "ACCSCAN: block %d-%d read %d registers",
-            start,
-            start + 39,
-            len(block),
-        )
-
-    # Match single-register candidates
-    today_matches: list[tuple[int, int]] = []
-    lifetime_matches: list[tuple[int, int]] = []
-    for addr, val in all_regs.items():
-        for target in today_targets:
-            if abs(val - target) <= today_tolerance:
-                today_matches.append((addr, val))
-                break
-        for target in lifetime_single:
-            if abs(val - target) <= lifetime_tolerance:
-                lifetime_matches.append((addr, val))
-                break
-
-    # Match 32-bit register pairs for lifetime (low | high<<16 ≈ 337900)
-    pair_matches: list[tuple[int, int, int]] = []
-    for addr in sorted(all_regs.keys()):
-        if addr + 1 not in all_regs:
-            continue
-        low = all_regs[addr]
-        high = all_regs[addr + 1]
-        # little-endian: low first
-        val_le = low | (high << 16)
-        if abs(val_le - 337900) <= 5000:
-            pair_matches.append((addr, val_le, 0))
-        # big-endian: high first
-        val_be = high | (low << 16)
-        if abs(val_be - 337900) <= 5000:
-            pair_matches.append((addr, val_be, 1))
-
-    _LOGGER.info(
-        "ACCSCAN: today-candidates (raw near 1/10/100/1000): %s",
-        today_matches or "none",
-    )
-    _LOGGER.info(
-        "ACCSCAN: lifetime-single-candidates (raw near 338/3379/33790/337900): %s",
-        lifetime_matches or "none",
-    )
-    _LOGGER.info(
-        "ACCSCAN: lifetime-pair-candidates (32-bit ~337900, le=0/be=1): %s",
-        pair_matches or "none",
-    )
-    # Dump all non-zero registers for manual inspection
-    nonzero = {a: v for a, v in all_regs.items() if v != 0}
-    _LOGGER.info(
-        "ACCSCAN: all non-zero registers (%d of %d): %s",
-        len(nonzero),
-        len(all_regs),
-        nonzero,
     )
 
 
