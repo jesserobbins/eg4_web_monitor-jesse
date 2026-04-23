@@ -616,8 +616,13 @@ class TestReadACCoupleEnergy:
         assert "ac_couple_energy_total" not in sensors
         transport._read_input_registers.assert_not_called()
 
-    async def test_skips_when_no_ac_input_type(self):
-        """Does not read energy when ac_input_type is missing."""
+    async def test_reads_when_ac_input_type_missing(self):
+        """Falls through and reads energy when ac_input_type is missing.
+
+        Register 77 reads can silently return empty results on some firmware;
+        we must not strand the energy sensor when that happens. Generator
+        mode is the only case where we should bail.
+        """
         from custom_components.eg4_web_monitor.coordinator_local import (
             _read_ac_couple_energy,
         )
@@ -628,7 +633,7 @@ class TestReadACCoupleEnergy:
 
         await _read_ac_couple_energy(transport, sensors)
 
-        assert "ac_couple_energy_today" not in sensors
+        assert sensors["ac_couple_energy_today"] == pytest.approx(0.1, abs=0.001)
 
     async def test_skips_when_no_read_fn(self):
         """Gracefully skips when transport lacks _read_input_registers."""

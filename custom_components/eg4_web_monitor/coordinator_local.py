@@ -142,7 +142,11 @@ async def _read_ac_couple_energy(transport: Any, sensors: dict[str, Any]) -> Non
     Register 124: energy today (raw Wh, ÷1000 = kWh)
     Registers 125-126: energy total (32-bit raw Wh, ÷1000 = kWh)
     """
-    if sensors.get("ac_input_type") != "Grid":
+    # Only bail if we explicitly know the port is on Generator. If ac_input_type
+    # is missing from the dict (register 77 read failed or returned empty), fall
+    # through and read the energy — on OFFGRID with AC coupling configured, the
+    # registers reflect AC couple energy regardless.
+    if sensors.get("ac_input_type") == "Generator":
         return
 
     read_fn = getattr(transport, "_read_input_registers", None)
@@ -192,6 +196,10 @@ async def _read_ac_input_type(transport: Any, sensors: dict[str, Any]) -> None:
                 raw_value,
                 ac_input_type,
                 sensors["ac_input_type"],
+            )
+        else:
+            _LOGGER.debug(
+                "AC input type register 77 returned empty result: %s", regs
             )
     except Exception as err:
         _LOGGER.warning("AC input type register 77 read failed: %s", err)
