@@ -38,7 +38,12 @@ from .coordinator_mappings import GRIDBOSS_SMART_PORT_DYNAMIC_KEYS
 _LOGGER = logging.getLogger(__name__)
 
 
-def _should_create_sensor(sensor_key: str, features: dict[str, Any] | None) -> bool:
+def _should_create_sensor(
+    sensor_key: str,
+    features: dict[str, Any] | None,
+    *,
+    has_http_api: bool = True,
+) -> bool:
     """Determine if a sensor should be created based on device features.
 
     This function implements feature-based sensor filtering to avoid creating
@@ -47,6 +52,9 @@ def _should_create_sensor(sensor_key: str, features: dict[str, Any] | None) -> b
     Args:
         sensor_key: The sensor key to check
         features: Device features dictionary from feature detection, or None
+        has_http_api: Whether the coordinator has cloud HTTP API access.
+            Some derived sensors (e.g. OFFGRID AC couple energy) depend on
+            cloud data and must be suppressed in local-only mode.
 
     Returns:
         True if the sensor should be created, False if it should be skipped
@@ -84,9 +92,15 @@ def _should_create_sensor(sensor_key: str, features: dict[str, Any] | None) -> b
     if sensor_key in INVERTER_BOARD_TEMP_SENSORS:
         return bool(features.get("supports_inverter_board_temps", True))
 
-    # AC couple energy derived from cloud consumption minus energy balance
-    # Only on EG4_OFFGRID in hybrid mode (other families have direct registers)
+    # AC couple energy derived from cloud consumption minus energy balance.
+    # On EG4_OFFGRID this is the ONLY reliable source: local Modbus registers
+    # 124/125/126 do not accumulate correctly (confirmed via field delta scan
+    # 2026-04-23 — see docs/ac-couple-energy-local-mode.md). Suppress in
+    # local-only mode; users can add HA Riemann-sum integration over
+    # ac_couple_power as a workaround.
     if sensor_key in AC_COUPLE_ENERGY_DERIVED_SENSORS:
+        if not has_http_api:
+            return False
         return bool(features.get("supports_ac_couple_energy_derived", False))
 
     # Default: create the sensor
@@ -337,7 +351,9 @@ async def async_setup_entry(
                 # Skip battery_bank sensors (handled by their own entity class)
                 if sensor_key.startswith("battery_bank_"):
                     continue
-                if not _should_create_sensor(sensor_key, features):
+                if not _should_create_sensor(
+                    sensor_key, features, has_http_api=coordinator.has_http_api()
+                ):
                     continue
                 known.add(sensor_key)
                 new_entities.append(
@@ -399,7 +415,9 @@ def _create_inverter_sensors(
             # Skip battery_bank sensors - they'll be created separately
             if not sensor_key.startswith("battery_bank_"):
                 # Check if sensor should be created based on device features
-                if _should_create_sensor(sensor_key, features):
+                if _should_create_sensor(
+                    sensor_key, features, has_http_api=coordinator.has_http_api()
+                ):
                     inverter_entities.append(
                         EG4InverterSensor(
                             coordinator=coordinator,

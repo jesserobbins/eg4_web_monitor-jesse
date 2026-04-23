@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from custom_components.eg4_web_monitor.const import (
+    AC_COUPLE_ENERGY_DERIVED_SENSORS,
     DISCHARGE_RECOVERY_SENSORS,
     NON_THREE_PHASE_SENSORS,
     SENSOR_TYPES,
@@ -128,6 +129,33 @@ class TestShouldCreateSensor:
         features = {"supports_discharge_recovery_hysteresis": False}
         for key in DISCHARGE_RECOVERY_SENSORS:
             assert _should_create_sensor(key, features) is False
+
+    def test_ac_couple_energy_derived_hybrid_mode(self):
+        """OFFGRID AC couple energy sensors created only with cloud HTTP API."""
+        features = {"supports_ac_couple_energy_derived": True}
+        for key in AC_COUPLE_ENERGY_DERIVED_SENSORS:
+            assert (
+                _should_create_sensor(key, features, has_http_api=True) is True
+            ), f"{key} should be created in hybrid mode"
+
+    def test_ac_couple_energy_derived_local_only_mode(self):
+        """OFFGRID AC couple energy sensors suppressed in local-only mode.
+
+        Cloud derivation is the only reliable source — local Modbus registers
+        124-126 do not accumulate correctly on firmware ceaa-0709 (confirmed
+        via field delta scan 2026-04-23).
+        """
+        features = {"supports_ac_couple_energy_derived": True}
+        for key in AC_COUPLE_ENERGY_DERIVED_SENSORS:
+            assert (
+                _should_create_sensor(key, features, has_http_api=False) is False
+            ), f"{key} must be suppressed without cloud API"
+
+    def test_ac_couple_energy_derived_default_has_http(self):
+        """Default has_http_api=True preserves backward-compatible behavior."""
+        features = {"supports_ac_couple_energy_derived": True}
+        for key in AC_COUPLE_ENERGY_DERIVED_SENSORS:
+            assert _should_create_sensor(key, features) is True
 
     def test_volt_watt_with_support(self):
         """Volt-Watt sensor created when device supports it."""
