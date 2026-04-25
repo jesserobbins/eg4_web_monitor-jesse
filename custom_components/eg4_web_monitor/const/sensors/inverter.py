@@ -111,6 +111,20 @@ SENSOR_TYPES = {
         "state_class": "measurement",
         "icon": "mdi:solar-power-variant",
     },
+    "ac_couple_energy_today": {
+        "name": "AC Couple Energy Today",
+        "unit": UnitOfEnergy.KILO_WATT_HOUR,
+        "device_class": "energy",
+        "state_class": "total_increasing",
+        "icon": "mdi:solar-power-variant",
+    },
+    "ac_couple_energy_total": {
+        "name": "AC Couple Energy Total",
+        "unit": UnitOfEnergy.KILO_WATT_HOUR,
+        "device_class": "energy",
+        "state_class": "total_increasing",
+        "icon": "mdi:solar-power-variant",
+    },
     "eps_power": {
         "name": "EPS Power",
         "unit": UnitOfPower.WATT,

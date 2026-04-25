@@ -260,6 +260,20 @@ class EG4DataUpdateCoordinator(
         self._inverter_cache: dict[str, BaseInverter] = {}
         self._firmware_cache: dict[str, str] = {}
 
+        # AC couple energy integrator state (per-inverter trapezoidal accumulation
+        # of ac_couple_power into kWh).  The cloud-derived approach
+        # (cloud_today_usage − energy_balance) is the difference of two large
+        # noisy numbers and oscillates instead of accumulating.  Direct
+        # integration of ac_couple_power produces a monotonic counter that
+        # tracks reality.  See _accumulate_ac_couple_energy in
+        # coordinator_mixins.DeviceProcessingMixin.
+        self._ac_couple_last_t: dict[str, datetime] = {}
+        self._ac_couple_last_w: dict[str, float] = {}
+        self._ac_couple_today_kwh: dict[str, float] = {}
+        self._ac_couple_total_kwh: dict[str, float] = {}
+        self._ac_couple_today_date: dict[str, str] = {}  # ISO date string
+        self._ac_couple_seeded: set[str] = set()  # serials whose lifetime was seeded
+
         # MID device (GridBOSS) cache for LOCAL mode
         self._mid_device_cache: dict[str, Any] = {}
 

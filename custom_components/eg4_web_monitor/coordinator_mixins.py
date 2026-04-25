@@ -231,6 +231,12 @@ if TYPE_CHECKING:
         _device_info_cache: dict[str, DeviceInfo]
         _battery_device_info_cache: dict[str, DeviceInfo]
         _battery_bank_device_info_cache: dict[str, DeviceInfo]
+        _ac_couple_last_t: dict[str, datetime]
+        _ac_couple_last_w: dict[str, float]
+        _ac_couple_today_kwh: dict[str, float]
+        _ac_couple_total_kwh: dict[str, float]
+        _ac_couple_today_date: dict[str, str]
+        _ac_couple_seeded: set[str]
 
         # ── DataUpdateCoordinator / coordinator.py methods ──
         def get_inverter_object(self, serial: str) -> BaseInverter | None: ...
@@ -242,6 +248,13 @@ if TYPE_CHECKING:
         async def _resolve_local_firmware(
             self, device: Any, cloud_version: str
         ) -> str: ...
+        def _accumulate_ac_couple_energy(
+            self,
+            serial: str,
+            power_w: float | None,
+            seed_today: float | None,
+            seed_total: float | None,
+        ) -> tuple[float | None, float | None]: ...
         async def _process_inverter_object(
             self, inverter: BaseInverter
         ) -> dict[str, Any]: ...
@@ -462,6 +475,88 @@ class DeviceProcessingMixin(_MixinBase):
             )
         return cloud_version
 
+    def _accumulate_ac_couple_energy(
+        self,
+        serial: str,
+        power_w: float | None,
+        seed_today: float | None,
+        seed_total: float | None,
+    ) -> tuple[float | None, float | None]:
+        """Integrate ac_couple_power over time into kWh (today + lifetime).
+
+        Direct trapezoidal integration of ``ac_couple_power`` produces a
+        monotonic counter that tracks reality.  No reliable Modbus accumulator
+        register exists on EG4_OFFGRID firmware (ceaa-0709): registers 124-126
+        either drift or overflow.  This integrator runs on every coordinator
+        tick.
+
+        Args:
+            serial: Inverter serial (per-device accumulator).
+            power_w: Current ``ac_couple_power`` reading in watts.
+            seed_today: Optional cloud-derived today value used to seed on
+                first call.  Falls back to ``0.0``.
+            seed_total: Optional cloud-derived lifetime value used to seed on
+                first call.  Falls back to ``0.0``.
+
+        Returns:
+            Tuple of ``(today_kwh, total_kwh)``.  Either may be ``None`` if
+            no power reading is available and no seed value exists.
+        """
+        # Local "today" is keyed by HA timezone date; resets at local midnight.
+        now = dt_util.utcnow()
+        today_local = dt_util.as_local(now).date().isoformat()
+
+        # First call: seed accumulator so we don't lose history across HA
+        # restarts or integration reloads.
+        if serial not in self._ac_couple_seeded:
+            self._ac_couple_today_kwh[serial] = (
+                seed_today if seed_today is not None else 0.0
+            )
+            self._ac_couple_total_kwh[serial] = (
+                seed_total if seed_total is not None else 0.0
+            )
+            self._ac_couple_today_date[serial] = today_local
+            self._ac_couple_seeded.add(serial)
+
+        # Day rollover: zero out today when local date changes.
+        if self._ac_couple_today_date.get(serial) != today_local:
+            self._ac_couple_today_kwh[serial] = 0.0
+            self._ac_couple_today_date[serial] = today_local
+
+        # No fresh power reading: return current accumulator (no integration).
+        if power_w is None:
+            return (
+                self._ac_couple_today_kwh.get(serial),
+                self._ac_couple_total_kwh.get(serial),
+            )
+
+        # Trapezoidal integration: average current and previous power across
+        # the time delta.  Negative power treated as zero (export, no
+        # production).  Skip integration on the first sample (no delta_t)
+        # and on suspiciously long gaps (>10 min suggests HA was offline).
+        last_t = self._ac_couple_last_t.get(serial)
+        last_w = self._ac_couple_last_w.get(serial, power_w)
+        if last_t is not None:
+            dt_s = (now - last_t).total_seconds()
+            if 0 < dt_s < 600:
+                avg_w = max(0.0, (max(0.0, power_w) + max(0.0, last_w)) / 2.0)
+                delta_kwh = avg_w * dt_s / 3600.0 / 1000.0
+                if delta_kwh > 0:
+                    self._ac_couple_today_kwh[serial] = (
+                        self._ac_couple_today_kwh.get(serial, 0.0) + delta_kwh
+                    )
+                    self._ac_couple_total_kwh[serial] = (
+                        self._ac_couple_total_kwh.get(serial, 0.0) + delta_kwh
+                    )
+
+        self._ac_couple_last_t[serial] = now
+        self._ac_couple_last_w[serial] = power_w
+
+        return (
+            round(self._ac_couple_today_kwh.get(serial, 0.0), 3),
+            round(self._ac_couple_total_kwh.get(serial, 0.0), 3),
+        )
+
     async def _process_inverter_object(
         self, inverter: "BaseInverter"
     ) -> dict[str, Any]:
@@ -640,6 +735,30 @@ class DeviceProcessingMixin(_MixinBase):
                 value = getattr(transport_energy, energy_attr, None)
                 if value is not None:
                     sensors[sensor_key] = value
+
+        # Integrate ac_couple_power → ac_couple_energy_today/total.  No reliable
+        # Modbus accumulator register exists on EG4_OFFGRID firmware ceaa-0709
+        # and the cloud API does not expose a separate AC-couple energy total,
+        # so we derive both via trapezoidal integration on every tick.
+        ac_power_raw = processed["sensors"].get("ac_couple_power")
+        ac_power_f: float | None
+        if ac_power_raw is None:
+            ac_power_f = None
+        else:
+            try:
+                ac_power_f = float(ac_power_raw)
+            except (TypeError, ValueError):
+                ac_power_f = None
+        today_kwh, total_kwh = self._accumulate_ac_couple_energy(
+            inverter.serial_number,
+            ac_power_f,
+            seed_today=None,
+            seed_total=None,
+        )
+        if today_kwh is not None:
+            processed["sensors"]["ac_couple_energy_today"] = today_kwh
+        if total_kwh is not None:
+            processed["sensors"]["ac_couple_energy_total"] = total_kwh
 
         # Add firmware_version as diagnostic sensor
         processed["sensors"]["firmware_version"] = firmware_version

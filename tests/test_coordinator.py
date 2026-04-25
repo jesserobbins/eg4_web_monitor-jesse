@@ -5814,3 +5814,145 @@ class TestResolveLocalFirmware:
 
         result = await coordinator._resolve_local_firmware(device, "CLOUD-1.0")
         assert result == "CLOUD-1.0"
+
+
+# ── _accumulate_ac_couple_energy ──────────────────────────────────────
+
+
+class TestAccumulateAcCoupleEnergy:
+    """Tests for trapezoidal integration of ac_couple_power into kWh."""
+
+    async def test_seeds_with_provided_values_on_first_call(
+        self, hass, mock_config_entry
+    ):
+        """First call seeds today/lifetime from cloud-derived values."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        today, total = coordinator._accumulate_ac_couple_energy(
+            "INV001", power_w=None, seed_today=1.5, seed_total=42.0
+        )
+        assert today == 1.5
+        assert total == 42.0
+        assert "INV001" in coordinator._ac_couple_seeded
+
+    async def test_seeds_with_zero_when_no_seed_provided(
+        self, hass, mock_config_entry
+    ):
+        """First call without seeds defaults to 0.0."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        today, total = coordinator._accumulate_ac_couple_energy(
+            "INV001", power_w=None, seed_today=None, seed_total=None
+        )
+        assert today == 0.0
+        assert total == 0.0
+
+    async def test_no_integration_on_first_sample(
+        self, hass, mock_config_entry
+    ):
+        """First call with power but no prior timestamp returns seed values."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        today, total = coordinator._accumulate_ac_couple_energy(
+            "INV001", power_w=1000.0, seed_today=None, seed_total=None
+        )
+        assert today == 0.0
+        assert total == 0.0
+        # State updated for next call
+        assert coordinator._ac_couple_last_w["INV001"] == 1000.0
+
+    async def test_integrates_between_two_samples(
+        self, hass, mock_config_entry
+    ):
+        """Two samples 30s apart at 1000W → ~0.0083 kWh."""
+        from datetime import timedelta as _td
+        from homeassistant.util import dt as dt_util
+
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        # Prime the state as if a prior sample arrived 30s ago.
+        coordinator._accumulate_ac_couple_energy(
+            "INV001", power_w=1000.0, seed_today=None, seed_total=None
+        )
+        coordinator._ac_couple_last_t["INV001"] = (
+            dt_util.utcnow() - _td(seconds=30)
+        )
+
+        today, total = coordinator._accumulate_ac_couple_energy(
+            "INV001", power_w=1000.0, seed_today=None, seed_total=None
+        )
+        # 1000W avg × 30s ÷ 3600 ÷ 1000 = 0.00833 kWh, rounded to 3dp
+        assert today == pytest.approx(0.008, abs=0.001)
+        assert total == pytest.approx(0.008, abs=0.001)
+
+    async def test_skips_integration_on_long_gap(
+        self, hass, mock_config_entry
+    ):
+        """Gap >10min suggests HA was offline; skip integration to avoid bogus jump."""
+        from datetime import timedelta as _td
+        from homeassistant.util import dt as dt_util
+
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        coordinator._accumulate_ac_couple_energy(
+            "INV001", power_w=1000.0, seed_today=None, seed_total=None
+        )
+        # 30 min gap simulates HA offline period
+        coordinator._ac_couple_last_t["INV001"] = (
+            dt_util.utcnow() - _td(minutes=30)
+        )
+
+        today, total = coordinator._accumulate_ac_couple_energy(
+            "INV001", power_w=1000.0, seed_today=None, seed_total=None
+        )
+        # No integration occurred — counter unchanged
+        assert today == 0.0
+        assert total == 0.0
+
+    async def test_negative_power_treated_as_zero(
+        self, hass, mock_config_entry
+    ):
+        """Negative ac_couple_power (export) does not subtract from accumulator."""
+        from datetime import timedelta as _td
+        from homeassistant.util import dt as dt_util
+
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        coordinator._accumulate_ac_couple_energy(
+            "INV001", power_w=-500.0, seed_today=10.0, seed_total=100.0
+        )
+        coordinator._ac_couple_last_t["INV001"] = (
+            dt_util.utcnow() - _td(seconds=30)
+        )
+
+        today, total = coordinator._accumulate_ac_couple_energy(
+            "INV001", power_w=-500.0, seed_today=None, seed_total=None
+        )
+        # Both negatives clamp to 0 → avg=0 → no delta
+        assert today == 10.0
+        assert total == 100.0
+
+    async def test_per_serial_independent_accumulators(
+        self, hass, mock_config_entry
+    ):
+        """Two inverters maintain independent accumulators."""
+        mock_config_entry.add_to_hass(hass)
+        coordinator = EG4DataUpdateCoordinator(hass, mock_config_entry)
+
+        coordinator._accumulate_ac_couple_energy(
+            "INV001", power_w=None, seed_today=5.0, seed_total=50.0
+        )
+        coordinator._accumulate_ac_couple_energy(
+            "INV002", power_w=None, seed_today=7.0, seed_total=70.0
+        )
+
+        assert coordinator._ac_couple_today_kwh["INV001"] == 5.0
+        assert coordinator._ac_couple_today_kwh["INV002"] == 7.0
+        assert coordinator._ac_couple_total_kwh["INV001"] == 50.0
+        assert coordinator._ac_couple_total_kwh["INV002"] == 70.0
