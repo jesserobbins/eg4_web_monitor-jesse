@@ -673,6 +673,23 @@ class DeviceProcessingMixin(_MixinBase):
         property_map = self._get_inverter_property_map()
         processed["sensors"] = _map_device_properties(inverter, property_map)
 
+        # Seed split-phase per-leg sensor keys so the entity platform creates
+        # the entities on first refresh.  These come from the local transport
+        # (registers I193/I194 grid, I127/I128 EPS, I188/I189 generator) but
+        # the entity platform only creates entities for keys it sees in the
+        # initial sensors dict — without seeding, cloud-only or first-refresh
+        # cycles drop the entities entirely.
+        if features.get("supports_split_phase"):
+            for key in (
+                "grid_voltage_l1",
+                "grid_voltage_l2",
+                "eps_voltage_l1",
+                "eps_voltage_l2",
+                "generator_power_l1",
+                "generator_power_l2",
+            ):
+                processed["sensors"].setdefault(key, None)
+
         # Override consumption with energy balance when transport data is present.
         # pylxpweb's energy_today_usage/energy_lifetime_usage properties read from
         # load_energy registers (Erec = AC charge from grid) when transport data
@@ -714,11 +731,33 @@ class DeviceProcessingMixin(_MixinBase):
                 ("grid_current_l2", "inverter_rms_current_s"),
                 ("grid_current_l3", "inverter_rms_current_t"),
                 ("battery_current", "battery_current"),
+                # load_power (I170, Pload) — cloud API zeroes this for
+                # EG4_OFFGRID, but Modbus reg 170 has the real value.
+                ("load_power", "load_power"),
+                # Split-phase voltages (I193/I194 grid, I127/I128 EPS) and
+                # per-leg EPS power (I129/I130) — populated by Modbus only.
+                ("grid_voltage_l1", "grid_l1_voltage"),
+                ("grid_voltage_l2", "grid_l2_voltage"),
+                ("eps_voltage_l1", "eps_l1_voltage"),
+                ("eps_voltage_l2", "eps_l2_voltage"),
+                ("eps_power_l1", "eps_l1_power"),
+                ("eps_power_l2", "eps_l2_power"),
+                # AC couple power: needed by the energy integrator before
+                # the supplement loop in coordinator_http populates it.
+                ("ac_couple_power", "ac_couple_power"),
             )
             for sensor_key, runtime_attr in _TRANSPORT_OVERLAY:
                 value = getattr(transport_runtime, runtime_attr, None)
                 if value is not None:
                     sensors[sensor_key] = value
+
+            # Recompute eps_load_power from overlaid per-leg values.  The sum
+            # derivation in _build_runtime_sensor_mapping() runs only on the
+            # local path — hybrid mode needs its own recomputation here.
+            l1 = sensors.get("eps_power_l1")
+            l2 = sensors.get("eps_power_l2")
+            if l1 is not None or l2 is not None:
+                sensors["eps_load_power"] = (l1 or 0) + (l2 or 0)
 
         # Overlay transport-exclusive energy sensors (Modbus-only, regs 133-138).
         # Cloud API does not provide per-leg EPS energy; only available via Modbus.

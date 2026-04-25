@@ -132,6 +132,13 @@ SENSOR_TYPES = {
         "state_class": "measurement",
         "icon": "mdi:power-plug",
     },
+    "eps_load_power": {
+        "name": "EPS Load Power",
+        "unit": UnitOfPower.WATT,
+        "device_class": "power",
+        "state_class": "measurement",
+        "icon": "mdi:home-lightning-bolt",
+    },
     "eps_power_l1": {
         "name": "EPS Power L1",
         "unit": UnitOfPower.WATT,
