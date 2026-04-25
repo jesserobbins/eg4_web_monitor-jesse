@@ -262,6 +262,72 @@ class TestSwitchPlatformSetup:
         assert "FUNC_BATTERY_BACKUP_CTRL" in working_mode_params
         assert "FUNC_GRID_PEAK_SHAVING" in working_mode_params
 
+    @pytest.mark.asyncio
+    async def test_offgrid_suppresses_battery_backup_switch(self, hass):
+        """EG4_OFFGRID is permanently off-grid; Battery Backup toggle is moot."""
+        coordinator = _mock_coordinator(
+            model="12000XP",
+            device_data={
+                "features": {
+                    "inverter_family": INVERTER_FAMILY_EG4_OFFGRID,
+                    "supports_off_grid": True,
+                }
+            },
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        type_names = [type(e).__name__ for e in entities]
+        assert "EG4BatteryBackupSwitch" not in type_names
+
+    @pytest.mark.asyncio
+    async def test_offgrid_suppresses_green_mode_switch(self, hass):
+        """EG4_OFFGRID has no on-grid mode to switch to; Green Mode is moot."""
+        coordinator = _mock_coordinator(
+            model="12000XP",
+            device_data={
+                "features": {
+                    "inverter_family": INVERTER_FAMILY_EG4_OFFGRID,
+                    "supports_off_grid": True,
+                }
+            },
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        type_names = [type(e).__name__ for e in entities]
+        assert "EG4OffGridModeSwitch" not in type_names
+
+    @pytest.mark.asyncio
+    async def test_offgrid_suppresses_non_applicable_working_modes(self, hass):
+        """EG4_OFFGRID: peak_shaving / forced_discharge / battery_backup_mode are moot."""
+        coordinator = _mock_coordinator(
+            model="12000XP",
+            device_data={
+                "features": {
+                    "inverter_family": INVERTER_FAMILY_EG4_OFFGRID,
+                    "supports_off_grid": True,
+                }
+            },
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        working_modes = [e for e in entities if isinstance(e, EG4WorkingModeSwitch)]
+        mode_keys = {e._mode_key for e in working_modes}
+        assert "peak_shaving_mode" not in mode_keys
+        assert "battery_backup_mode" not in mode_keys
+        assert "forced_discharge_mode" not in mode_keys
+
 
 # ── QuickChargeSwitch ────────────────────────────────────────────────
 

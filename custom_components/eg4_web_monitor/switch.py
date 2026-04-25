@@ -134,7 +134,14 @@ async def async_setup_entry(
                         serial,
                     )
 
-                # Add battery backup switch (EPS) based on feature detection
+                # Inverter family — used to gate switches that don't apply
+                # to off-grid (12000XP/6000XP) inverters.
+                family = (device_data.get("features") or {}).get("inverter_family")
+
+                # Add battery backup switch (EPS) based on feature detection.
+                # EG4_OFFGRID: Battery Backup Mode is not applicable — the
+                # inverter is always off-grid and always in backup mode, so
+                # exposing the toggle would be confusing.
                 eps_supported = _supports_eps_battery_backup(device_data)
                 _LOGGER.debug(
                     "EPS support check for %s: supported=%s, features=%s",
@@ -142,19 +149,36 @@ async def async_setup_entry(
                     eps_supported,
                     device_data.get("features"),
                 )
-                if eps_supported:
+                if eps_supported and family != INVERTER_FAMILY_EG4_OFFGRID:
                     entities.append(EG4BatteryBackupSwitch(coordinator, serial))
                 else:
                     _LOGGER.debug(
-                        "Skipping EPS Battery Backup switch for %s (not supported)",
+                        "Skipping EPS Battery Backup switch for %s "
+                        "(not supported or off-grid family)",
                         serial,
                     )
 
-                # Add off-grid mode switch (Green Mode)
-                entities.append(EG4OffGridModeSwitch(coordinator, serial))
+                # Add off-grid mode switch (Green Mode) — not configurable
+                # on EG4_OFFGRID since the inverter is permanently off-grid.
+                if family != INVERTER_FAMILY_EG4_OFFGRID:
+                    entities.append(EG4OffGridModeSwitch(coordinator, serial))
 
                 # Add working mode switches
                 for mode_key, mode_config in WORKING_MODES.items():
+                    # EG4_OFFGRID: suppress modes that don't apply to off-grid
+                    # inverters (peak shaving, forced discharge, battery backup).
+                    if family == INVERTER_FAMILY_EG4_OFFGRID and mode_key in (
+                        "peak_shaving_mode",
+                        "battery_backup_mode",
+                        "forced_discharge_mode",
+                    ):
+                        _LOGGER.debug(
+                            "Skipping %s working mode for %s (not applicable on EG4_OFFGRID)",
+                            mode_key,
+                            serial,
+                        )
+                        continue
+
                     # For local-only mode, skip working modes without a Modbus
                     # register mapping in _WORKING_MODE_PARAMETERS.
                     if coordinator.is_local_only():
@@ -170,8 +194,6 @@ async def async_setup_entry(
                     # AC Coupling Mode only on EG4_OFFGRID (12000XP/6000XP)
                     # EG4_HYBRID uses GridBOSS smart ports for AC coupling
                     if mode_config.get("param") == PARAM_FUNC_AC_COUPLE_EN:
-                        features = device_data.get("features", {})
-                        family = features.get("inverter_family")
                         if family != INVERTER_FAMILY_EG4_OFFGRID:
                             _LOGGER.debug(
                                 "Skipping AC Coupling Mode for %s (family=%s, "
