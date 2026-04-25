@@ -256,6 +256,12 @@ if TYPE_CHECKING:
         _device_info_cache: dict[str, DeviceInfo]
         _battery_device_info_cache: dict[str, DeviceInfo]
         _battery_bank_device_info_cache: dict[str, DeviceInfo]
+        _ac_couple_last_t: dict[str, datetime]
+        _ac_couple_last_w: dict[str, float]
+        _ac_couple_today_kwh: dict[str, float]
+        _ac_couple_total_kwh: dict[str, float]
+        _ac_couple_today_date: dict[str, str]
+        _ac_couple_seeded: set[str]
 
         # ── DataUpdateCoordinator / coordinator.py methods ──
         def get_inverter_object(self, serial: str) -> BaseInverter | None: ...
@@ -267,6 +273,13 @@ if TYPE_CHECKING:
         async def _resolve_local_firmware(
             self, device: Any, cloud_version: str
         ) -> str: ...
+        def _accumulate_ac_couple_energy(
+            self,
+            serial: str,
+            power_w: float | None,
+            seed_today: float | None,
+            seed_total: float | None,
+        ) -> tuple[float | None, float | None]: ...
         async def _process_inverter_object(
             self, inverter: BaseInverter
         ) -> dict[str, Any]: ...
@@ -472,6 +485,88 @@ class DeviceProcessingMixin(_MixinBase):
             )
         return cloud_version
 
+    def _accumulate_ac_couple_energy(
+        self,
+        serial: str,
+        power_w: float | None,
+        seed_today: float | None,
+        seed_total: float | None,
+    ) -> tuple[float | None, float | None]:
+        """Integrate ac_couple_power over time into kWh (today + lifetime).
+
+        The cloud-derived approach (cloud_today_usage − energy_balance) is
+        the difference of two large noisy numbers and oscillates instead of
+        accumulating.  Direct trapezoidal integration of ``ac_couple_power``
+        produces a monotonic counter that tracks reality.
+
+        Args:
+            serial: Inverter serial (per-device accumulator).
+            power_w: Current ``ac_couple_power`` reading in watts.
+            seed_today: Cloud-derived today value used to seed the
+                accumulator on first call.  Falls back to ``0.0``.
+            seed_total: Cloud-derived lifetime value used to seed the
+                accumulator on first call.  Preserves history across
+                integration restarts when HA's RestoreEntity has no value.
+
+        Returns:
+            Tuple of ``(today_kwh, total_kwh)``.  Either may be ``None``
+            if no power reading is available and no seed value exists.
+        """
+        # Local "today" is keyed by HA timezone date; resets at local midnight.
+        now = dt_util.utcnow()
+        today_local = dt_util.as_local(now).date().isoformat()
+
+        # First call: seed accumulator from cloud-derived values so we don't
+        # lose history across HA restarts or integration reloads.
+        if serial not in self._ac_couple_seeded:
+            self._ac_couple_today_kwh[serial] = (
+                seed_today if seed_today is not None else 0.0
+            )
+            self._ac_couple_total_kwh[serial] = (
+                seed_total if seed_total is not None else 0.0
+            )
+            self._ac_couple_today_date[serial] = today_local
+            self._ac_couple_seeded.add(serial)
+
+        # Day rollover: zero out today when local date changes.
+        if self._ac_couple_today_date.get(serial) != today_local:
+            self._ac_couple_today_kwh[serial] = 0.0
+            self._ac_couple_today_date[serial] = today_local
+
+        # No fresh power reading: return current accumulator (no integration).
+        if power_w is None:
+            return (
+                self._ac_couple_today_kwh.get(serial),
+                self._ac_couple_total_kwh.get(serial),
+            )
+
+        # Trapezoidal integration: average current and previous power across
+        # the time delta.  Negative power treated as zero (export, no
+        # production).  Skip integration on the first sample (no delta_t)
+        # and on suspiciously long gaps (>10 min suggests HA was offline).
+        last_t = self._ac_couple_last_t.get(serial)
+        last_w = self._ac_couple_last_w.get(serial, power_w)
+        if last_t is not None:
+            dt_s = (now - last_t).total_seconds()
+            if 0 < dt_s < 600:
+                avg_w = max(0.0, (max(0.0, power_w) + max(0.0, last_w)) / 2.0)
+                delta_kwh = avg_w * dt_s / 3600.0 / 1000.0
+                if delta_kwh > 0:
+                    self._ac_couple_today_kwh[serial] = (
+                        self._ac_couple_today_kwh.get(serial, 0.0) + delta_kwh
+                    )
+                    self._ac_couple_total_kwh[serial] = (
+                        self._ac_couple_total_kwh.get(serial, 0.0) + delta_kwh
+                    )
+
+        self._ac_couple_last_t[serial] = now
+        self._ac_couple_last_w[serial] = power_w
+
+        return (
+            round(self._ac_couple_today_kwh.get(serial, 0.0), 3),
+            round(self._ac_couple_total_kwh.get(serial, 0.0), 3),
+        )
+
     async def _process_inverter_object(
         self, inverter: "BaseInverter"
     ) -> dict[str, Any]:
@@ -642,39 +737,30 @@ class DeviceProcessingMixin(_MixinBase):
                 sensors.get("grid_export_lifetime"),
             )
 
-            # Derive AC couple energy from cloud consumption minus energy balance.
-            # The cloud's todayUsage/totalUsage includes AC couple; energy balance
-            # does not.  The difference is the AC couple energy contribution.
-            # Always seed keys so the sensor platform discovers them on first refresh.
+            # AC couple energy: integrate ac_couple_power over time. The
+            # cloud-derived approach (cloud_today_usage − energy_balance) is
+            # the difference of two large noisy numbers and oscillates instead
+            # of accumulating (observed only +0.3 kWh growth across 6h of
+            # 1.3 kW avg AC couple production).  We seed the accumulator from
+            # the cloud derivation on first call so we don't lose history.
             sensors.setdefault("ac_couple_energy_today", None)
             sensors.setdefault("ac_couple_energy_total", None)
+            cloud_today: float | None = None
+            cloud_lifetime: float | None = None
             cloud_energy = getattr(inverter, "_energy", None)
-            _LOGGER.debug(
-                "AC couple energy derivation: _energy=%s, eb_today=%s, eb_lifetime=%s",
-                cloud_energy is not None,
-                eb_today,
-                eb_lifetime,
-            )
             if cloud_energy is not None:
                 from pylxpweb.constants import scale_energy_value
 
-                cloud_today = scale_energy_value(
+                cloud_today_usage = scale_energy_value(
                     "todayUsage", cloud_energy.todayUsage, to_kwh=True
                 )
-                cloud_lifetime = scale_energy_value(
+                cloud_lifetime_usage = scale_energy_value(
                     "totalUsage", cloud_energy.totalUsage, to_kwh=True
                 )
-                _LOGGER.debug(
-                    "AC couple energy: cloud_today=%s, cloud_lifetime=%s",
-                    cloud_today,
-                    cloud_lifetime,
-                )
-                if cloud_today is not None and eb_today is not None:
-                    sensors["ac_couple_energy_today"] = max(0.0, cloud_today - eb_today)
-                if cloud_lifetime is not None and eb_lifetime is not None:
-                    sensors["ac_couple_energy_total"] = max(
-                        0.0, cloud_lifetime - eb_lifetime
-                    )
+                if cloud_today_usage is not None and eb_today is not None:
+                    cloud_today = max(0.0, cloud_today_usage - eb_today)
+                if cloud_lifetime_usage is not None and eb_lifetime is not None:
+                    cloud_lifetime = max(0.0, cloud_lifetime_usage - eb_lifetime)
 
             sensors["consumption"] = eb_today
             sensors["consumption_lifetime"] = eb_lifetime
@@ -709,6 +795,34 @@ class DeviceProcessingMixin(_MixinBase):
                 value = getattr(transport_energy, energy_attr, None)
                 if value is not None:
                     sensors[sensor_key] = value
+
+        # Integrate ac_couple_power → ac_couple_energy_today/total. The
+        # accumulator handles trapezoidal integration, midnight reset, and
+        # seeding from cloud-derived values on first call to preserve history.
+        # Use locals defined above (cloud_today/cloud_lifetime) as seeds.
+        ac_power_w = processed["sensors"].get("ac_couple_power")
+        ac_power_f: float | None
+        if ac_power_w is None:
+            ac_power_f = None
+        else:
+            try:
+                ac_power_f = float(ac_power_w)
+            except (TypeError, ValueError):
+                ac_power_f = None
+        # cloud_today / cloud_lifetime are defined in the transport-attached
+        # block above; they may not be defined when no transport is attached.
+        seed_today = locals().get("cloud_today")
+        seed_total = locals().get("cloud_lifetime")
+        today_kwh, total_kwh = self._accumulate_ac_couple_energy(
+            inverter.serial_number,
+            ac_power_f,
+            seed_today,
+            seed_total,
+        )
+        if today_kwh is not None:
+            processed["sensors"]["ac_couple_energy_today"] = today_kwh
+        if total_kwh is not None:
+            processed["sensors"]["ac_couple_energy_total"] = total_kwh
 
         # Add firmware_version as diagnostic sensor
         processed["sensors"]["firmware_version"] = firmware_version

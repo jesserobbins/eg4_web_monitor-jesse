@@ -304,6 +304,22 @@ class EG4DataUpdateCoordinator(
         # Consecutive update failure counter for stale data tolerance
         self._consecutive_update_failures: int = 0
 
+        # AC couple energy accumulator (per-inverter serial).
+        # The cloud-derived approach (cloud_today_usage − energy_balance) is the
+        # difference of two large numbers and oscillates; observed only ~0.3 kWh
+        # of growth across 6 hours of 1.3 kW avg AC couple production. Instead
+        # we integrate ac_couple_power (reg I153 / cloud acCouplePower) over
+        # time using trapezoidal integration. Today resets at local midnight;
+        # lifetime accumulates forever. State is restored from HA's last sensor
+        # value on first cycle so the lifetime doesn't reset on integration
+        # reload.
+        self._ac_couple_last_t: dict[str, datetime] = {}
+        self._ac_couple_last_w: dict[str, float] = {}
+        self._ac_couple_today_kwh: dict[str, float] = {}
+        self._ac_couple_total_kwh: dict[str, float] = {}
+        self._ac_couple_today_date: dict[str, str] = {}  # ISO date string
+        self._ac_couple_seeded: set[str] = set()  # serials whose lifetime was seeded
+
         # Read both polling intervals from options
         is_local_connection = self.connection_type in (
             CONNECTION_TYPE_MODBUS,
