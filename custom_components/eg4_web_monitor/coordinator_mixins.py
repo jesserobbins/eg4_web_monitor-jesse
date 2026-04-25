@@ -108,6 +108,13 @@ _TRANSPORT_OVERLAY: tuple[tuple[str, str], ...] = (
     # Split-phase EPS power (I129/I130)
     ("eps_power_l1", "eps_l1_power"),
     ("eps_power_l2", "eps_l2_power"),
+    # AC couple instantaneous power (I153). Excluded from the cloud
+    # property map (cloud field returns cumulative Wh, not W) but the
+    # local register IS instantaneous watts. The supplement loop in
+    # coordinator_http.py overwrites this with a direct read; populating
+    # it here makes the value available to the AC couple energy
+    # accumulator that runs before the supplement.
+    ("ac_couple_power", "ac_couple_power"),
 )
 
 # Transport-exclusive energy overlay: per-leg EPS energy from regs 133-138.
