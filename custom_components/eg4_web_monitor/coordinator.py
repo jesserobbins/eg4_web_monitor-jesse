@@ -12,6 +12,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import aiohttp_client
+from homeassistant.helpers.storage import Store
 
 if TYPE_CHECKING:
     from homeassistant.helpers.update_coordinator import (
@@ -274,6 +275,15 @@ class EG4DataUpdateCoordinator(
         self._ac_couple_today_date: dict[str, str] = {}  # ISO date string
         self._ac_couple_seeded: set[str] = set()  # serials whose lifetime was seeded
 
+        # Persistent store so the lifetime/today counters survive HA restarts.
+        # The keyspace is per-config-entry to avoid collision across stations.
+        self._ac_couple_store: Store[dict[str, Any]] = Store(
+            hass,
+            version=1,
+            key=f"eg4_web_monitor_ac_couple_{entry.entry_id}",
+        )
+        self._ac_couple_state_loaded: bool = False
+
         # MID device (GridBOSS) cache for LOCAL mode
         self._mid_device_cache: dict[str, Any] = {}
 
@@ -409,6 +419,52 @@ class EG4DataUpdateCoordinator(
             )
         )
 
+    async def _load_ac_couple_state(self) -> None:
+        """Restore the AC couple energy accumulator from disk on first update.
+
+        Without this, the integrator would reset to 0 on every HA restart,
+        making the lifetime sensor useless and producing today-counter dips
+        that look like data corruption.
+        """
+        if self._ac_couple_state_loaded:
+            return
+        self._ac_couple_state_loaded = True
+        try:
+            data = await self._ac_couple_store.async_load() or {}
+        except Exception as exc:  # noqa: BLE001 — store failures must not break updates
+            _LOGGER.warning("Failed to load AC couple state: %s", exc)
+            return
+        for serial, state in data.items():
+            today = state.get("today_kwh")
+            total = state.get("total_kwh")
+            today_date = state.get("today_date")
+            if today is not None:
+                self._ac_couple_today_kwh[serial] = float(today)
+            if total is not None:
+                self._ac_couple_total_kwh[serial] = float(total)
+            if today_date:
+                self._ac_couple_today_date[serial] = today_date
+            self._ac_couple_seeded.add(serial)
+        if data:
+            _LOGGER.debug(
+                "Restored AC couple state for %d inverter(s)", len(data)
+            )
+
+    async def _save_ac_couple_state(self) -> None:
+        """Persist the AC couple accumulator so it survives HA restarts."""
+        data = {
+            serial: {
+                "today_kwh": round(self._ac_couple_today_kwh.get(serial, 0.0), 4),
+                "total_kwh": round(self._ac_couple_total_kwh.get(serial, 0.0), 4),
+                "today_date": self._ac_couple_today_date.get(serial, ""),
+            }
+            for serial in self._ac_couple_seeded
+        }
+        try:
+            await self._ac_couple_store.async_save(data)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("Failed to save AC couple state: %s", exc)
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from appropriate transport based on connection type.
 
@@ -424,6 +480,11 @@ class EG4DataUpdateCoordinator(
             ConfigEntryAuthFailed: If authentication fails (always immediate).
             UpdateFailed: If connection or API errors occur after 3 consecutive failures.
         """
+        # Restore AC couple energy accumulator on first update so the
+        # integrator continues from where it left off after a restart.
+        if not self._ac_couple_state_loaded:
+            await self._load_ac_couple_state()
+
         # Clear device_info caches at the start of each update cycle
         # so fresh data is used for any new entity registrations
         self.clear_device_info_caches()
@@ -446,6 +507,11 @@ class EG4DataUpdateCoordinator(
                     for key in _TOTAL_INCREASING_KEYS:
                         if key in sensors and sensors[key] == 0:
                             sensors[key] = None
+
+            # Persist AC couple integrator state once per cycle so an
+            # ungraceful shutdown loses at most one update interval.
+            if self._ac_couple_seeded:
+                self.hass.async_create_task(self._save_ac_couple_state())
 
             return data
         except ConfigEntryAuthFailed:

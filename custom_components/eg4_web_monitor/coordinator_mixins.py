@@ -2302,6 +2302,16 @@ class BackgroundTaskMixin(_MixinBase):
         # Mark removal function as used - the one-time listener auto-removes itself
         self._shutdown_listener_remove = None
 
+        # Persist the AC couple energy accumulator so the lifetime/today
+        # counters survive an HA restart.  Save before disconnecting so
+        # any final integrator update during this cycle is captured.
+        save_state = getattr(self, "_save_ac_couple_state", None)
+        if save_state is not None:
+            try:
+                await save_state()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning("AC couple state save failed at shutdown: %s", exc)
+
         await self._disconnect_all_transports()
 
         if hasattr(self, "_debounced_refresh") and self._debounced_refresh:

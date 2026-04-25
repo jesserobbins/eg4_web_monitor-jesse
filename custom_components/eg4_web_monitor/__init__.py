@@ -65,6 +65,7 @@ _DEPRECATED_CHARGE_DISCHARGE_SUFFIXES: frozenset[str] = frozenset(
 
 SERVICE_REFRESH_DATA = "refresh_data"
 SERVICE_RECONCILE_HISTORY = "reconcile_history"
+SERVICE_SEED_AC_COUPLE_ENERGY = "seed_ac_couple_energy"
 
 REFRESH_DATA_SCHEMA = vol.Schema(
     {
@@ -79,6 +80,15 @@ RECONCILE_HISTORY_SCHEMA = vol.Schema(
         ),
         vol.Optional("start_date"): cv.string,
         vol.Optional("end_date"): cv.string,
+        vol.Optional("entry_id"): cv.string,
+    }
+)
+
+SEED_AC_COUPLE_ENERGY_SCHEMA = vol.Schema(
+    {
+        vol.Required("serial"): cv.string,
+        vol.Optional("today_kwh"): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        vol.Optional("total_kwh"): vol.All(vol.Coerce(float), vol.Range(min=0)),
         vol.Optional("entry_id"): cv.string,
     }
 )
@@ -158,6 +168,54 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         SERVICE_RECONCILE_HISTORY,
         handle_reconcile_history,
         schema=RECONCILE_HISTORY_SCHEMA,
+    )
+
+    async def handle_seed_ac_couple_energy(call: ServiceCall) -> None:
+        """Manually seed the AC couple energy accumulator for one inverter.
+
+        Use after migrating between integration versions when the in-memory
+        accumulator was reset but recorder history shows the prior cumulative
+        value.  Either today_kwh or total_kwh (or both) may be provided.
+        """
+        serial = call.data["serial"]
+        today_kwh = call.data.get("today_kwh")
+        total_kwh = call.data.get("total_kwh")
+        entry_id = call.data.get("entry_id")
+
+        targets: list[Any] = []
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            if entry_id and entry.entry_id != entry_id:
+                continue
+            coordinator = getattr(entry, "runtime_data", None)
+            if coordinator is not None:
+                targets.append(coordinator)
+
+        if not targets:
+            raise ServiceValidationError("No EG4 coordinator found")
+
+        from homeassistant.util import dt as dt_util
+
+        for coordinator in targets:
+            if today_kwh is not None:
+                coordinator._ac_couple_today_kwh[serial] = float(today_kwh)
+            if total_kwh is not None:
+                coordinator._ac_couple_total_kwh[serial] = float(total_kwh)
+            coordinator._ac_couple_today_date[serial] = (
+                dt_util.as_local(dt_util.utcnow()).date().isoformat()
+            )
+            coordinator._ac_couple_seeded.add(serial)
+            await coordinator._save_ac_couple_state()
+            _LOGGER.info(
+                "Seeded AC couple energy for %s: today=%s, total=%s",
+                serial, today_kwh, total_kwh,
+            )
+            await coordinator.async_request_refresh()
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SEED_AC_COUPLE_ENERGY,
+        handle_seed_ac_couple_energy,
+        schema=SEED_AC_COUPLE_ENERGY_SCHEMA,
     )
 
     return True
