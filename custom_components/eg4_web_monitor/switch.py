@@ -212,6 +212,12 @@ async def async_setup_entry(
                         )
                     )
 
+                # Battery ECO Mode (register 110, bit 15) — only on
+                # EG4_OFFGRID hardware where pylxpweb's named-param
+                # mapping points to the wrong bit.
+                if family == INVERTER_FAMILY_EG4_OFFGRID:
+                    entities.append(EG4EcoModeSwitch(coordinator, serial))
+
     if entities:
         async_add_entities(entities)
 
@@ -452,6 +458,73 @@ class EG4OffGridModeSwitch(EG4BaseSwitch):
             cloud_enable_method="enable_green_mode",
             cloud_disable_method="disable_green_mode",
         )
+
+
+class EG4EcoModeSwitch(EG4BaseSwitch):
+    """Battery ECO Mode (register 110 bit 15) on EG4_OFFGRID hardware.
+
+    pylxpweb 0.9.27 maps FUNC_BATTERY_ECO_EN to bit 9 of register 110, but
+    EG4_OFFGRID firmware (ceaa-0709) uses bit 15.  The coordinator override
+    in ``_override_offgrid_bit_params`` rewrites the parameter dict with the
+    correct bit value; this switch then writes back via
+    ``inverter.write_transport_bit(110, 15, value)`` so the read and write
+    paths agree.
+    """
+
+    def __init__(
+        self,
+        coordinator: EG4DataUpdateCoordinator,
+        serial: str,
+    ) -> None:
+        """Initialize the ECO mode switch."""
+        super().__init__(
+            coordinator=coordinator,
+            serial=serial,
+            entity_key="battery_eco_mode",
+            name="Battery ECO Mode",
+            icon="mdi:leaf",
+            entity_category=EntityCategory.CONFIG,
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if ECO mode is enabled."""
+        if self._optimistic_state is not None:
+            return self._optimistic_state
+        return bool(self._parameter_data.get("FUNC_BATTERY_ECO_EN", False))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return extra state attributes."""
+        attributes: dict[str, Any] = {}
+        raw_110 = self._parameter_data.get("_raw_reg_110")
+        if raw_110 is not None:
+            attributes["raw_reg_110"] = f"0x{int(raw_110):04X}"
+        if self._optimistic_state is not None:
+            attributes["optimistic_state"] = self._optimistic_state
+        return attributes if attributes else None
+
+    async def _set_eco_mode(self, value: bool) -> None:
+        inverter = self._get_inverter_or_raise()
+        if not hasattr(inverter, "write_transport_bit"):
+            raise HomeAssistantError(
+                "ECO Mode requires a Modbus/dongle transport (raw bit write)"
+            )
+        success = await inverter.write_transport_bit(110, 15, value)
+        if not success:
+            raise HomeAssistantError("Failed to write register 110 bit 15")
+        # Optimistic update + parameter refresh so HA reflects it immediately.
+        self._optimistic_state = value
+        self.async_write_ha_state()
+        await self.coordinator.async_refresh_device_parameters(self._serial)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable ECO mode."""
+        await self._set_eco_mode(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable ECO mode."""
+        await self._set_eco_mode(False)
 
 
 # Mapping of working mode parameters to inverter method names (HTTP API)

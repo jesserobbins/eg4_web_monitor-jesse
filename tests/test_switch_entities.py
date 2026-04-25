@@ -305,6 +305,48 @@ class TestSwitchPlatformSetup:
         assert "EG4OffGridModeSwitch" not in type_names
 
     @pytest.mark.asyncio
+    async def test_offgrid_creates_eco_mode_switch(self, hass):
+        """EG4_OFFGRID exposes Battery ECO Mode (raw bit-15 of register 110)."""
+        coordinator = _mock_coordinator(
+            model="12000XP",
+            device_data={
+                "features": {
+                    "inverter_family": INVERTER_FAMILY_EG4_OFFGRID,
+                    "supports_off_grid": True,
+                }
+            },
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        type_names = [type(e).__name__ for e in entities]
+        assert "EG4EcoModeSwitch" in type_names
+
+    @pytest.mark.asyncio
+    async def test_non_offgrid_does_not_create_eco_mode_switch(self, hass):
+        """EG4_HYBRID and other families don't get the OFFGRID-specific ECO toggle."""
+        coordinator = _mock_coordinator(
+            model="FlexBOSS21",
+            device_data={
+                "features": {
+                    "inverter_family": INVERTER_FAMILY_EG4_HYBRID,
+                    "supports_off_grid": True,
+                }
+            },
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        type_names = [type(e).__name__ for e in entities]
+        assert "EG4EcoModeSwitch" not in type_names
+
+    @pytest.mark.asyncio
     async def test_offgrid_suppresses_non_applicable_working_modes(self, hass):
         """EG4_OFFGRID: peak_shaving / forced_discharge / battery_backup_mode are moot."""
         coordinator = _mock_coordinator(

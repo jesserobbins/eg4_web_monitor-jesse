@@ -33,7 +33,12 @@ if TYPE_CHECKING:
 
 from pylxpweb.devices.inverters import InverterFamily
 
-from .const import CONF_LOCAL_TRANSPORTS, DOMAIN, MANUFACTURER
+from .const import (
+    CONF_LOCAL_TRANSPORTS,
+    DOMAIN,
+    INVERTER_FAMILY_EG4_OFFGRID,
+    MANUFACTURER,
+)
 from .coordinator_mappings import (
     _apply_grid_type_override,
     _build_battery_bank_sensor_mapping,
@@ -2161,6 +2166,7 @@ class ParameterManagementMixin(_MixinBase):
                     self.data["parameters"] = {}
 
                 self.data["parameters"][serial] = inverter.parameters
+                await self._override_offgrid_bit_params(inverter, serial)
             else:
                 _LOGGER.warning(
                     "Inverter %s has no parameters attribute or empty parameters",
@@ -2211,6 +2217,51 @@ class ParameterManagementMixin(_MixinBase):
 
         time_since_refresh = dt_util.utcnow() - self._last_parameter_refresh
         return bool(time_since_refresh >= self._parameter_refresh_interval)
+
+    async def _override_offgrid_bit_params(
+        self, inverter: "BaseInverter", serial: str
+    ) -> None:
+        """Correct register-110 bit positions on EG4_OFFGRID firmware.
+
+        pylxpweb 0.9.27 maps FUNC_BATTERY_ECO_EN to bit 9 and FUNC_GREEN_EN
+        to bit 8 of holding register 110.  On EG4_OFFGRID (12000XP/6000XP)
+        firmware ceaa-0709 those flags actually live at bit 15 (ECO) and
+        bit 14 (Green) — confirmed via live Modbus probe.  Without this
+        override the switch state and the actual hardware state are
+        decoupled (state shown in HA reflects the wrong bit).
+
+        We re-read register 110 once per parameter cycle on OFFGRID and
+        replace the two flags with the correct bit values.  Also caches
+        the raw register so writes can do a read-modify-write cleanly.
+        """
+        if not self.data:
+            return
+        device_data = self.data.get("devices", {}).get(serial, {})
+        family = (device_data.get("features") or {}).get("inverter_family")
+        if family != INVERTER_FAMILY_EG4_OFFGRID:
+            return
+        transport = getattr(inverter, "_transport", None)
+        if transport is None or not hasattr(transport, "read_parameters"):
+            return
+        try:
+            raw_data = await transport.read_parameters(110, 1)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Raw register 110 read failed for %s: %s", serial, err)
+            return
+        if not raw_data or 110 not in raw_data:
+            return
+        raw_110 = raw_data[110]
+        params = self.data["parameters"][serial]
+        params["FUNC_BATTERY_ECO_EN"] = bool(raw_110 & (1 << 15))
+        params["FUNC_GREEN_EN"] = bool(raw_110 & (1 << 14))
+        params["_raw_reg_110"] = raw_110
+        _LOGGER.debug(
+            "Overrode reg-110 bits for %s: raw=0x%04X, ECO(bit15)=%s, Green(bit14)=%s",
+            serial,
+            raw_110,
+            params["FUNC_BATTERY_ECO_EN"],
+            params["FUNC_GREEN_EN"],
+        )
 
 
 class DSTSyncMixin(_MixinBase):
