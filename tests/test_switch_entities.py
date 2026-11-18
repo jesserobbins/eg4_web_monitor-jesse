@@ -13,6 +13,7 @@ from custom_components.eg4_web_monitor.const import (
     INVERTER_FAMILY_EG4_OFFGRID,
     PARAM_FUNC_AC_CHARGE,
     PARAM_FUNC_BATTERY_BACKUP_CTRL,
+    PARAM_FUNC_BATTERY_ECO_EN,
     PARAM_FUNC_CHARGE_LAST,
     PARAM_FUNC_EPS_EN,
     PARAM_FUNC_GREEN_EN,
@@ -26,6 +27,7 @@ from custom_components.eg4_web_monitor.switch import (
     _supports_eps_battery_backup,
     async_setup_entry,
     EG4ACCoupleSwitch,
+    EG4BatteryEcoModeSwitch,
     EG4SmartLoadSwitch,
     EG4QuickChargeSwitch,
     EG4BatteryBackupSwitch,
@@ -325,6 +327,92 @@ class TestSwitchPlatformSetup:
             and e._mode_config["param"] == "FUNC_CHARGE_LAST"
             for e in entities
         )
+
+    @pytest.mark.asyncio
+    async def test_setup_offgrid_creates_battery_eco_switch(self, hass):
+        """EG4_OFFGRID exposes Battery ECO Mode (register 110 bit 15).
+
+        pylxpweb >= 0.9.40 maps FUNC_BATTERY_ECO_EN to the hardware-verified
+        bit 15, but the register definition carries no ha_entity_key, so
+        upstream's generic entity factory cannot build a switch for it —
+        only this explicit class exposes the toggle.
+        """
+        coordinator = _mock_coordinator(
+            has_http=True,
+            model="12000XP",
+            device_data={"features": {"inverter_family": INVERTER_FAMILY_EG4_OFFGRID}},
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        type_names = [type(e).__name__ for e in entities]
+        assert "EG4BatteryEcoModeSwitch" in type_names
+
+    @pytest.mark.asyncio
+    async def test_setup_offgrid_local_only_creates_battery_eco_switch(self, hass):
+        """LOCAL-only EG4_OFFGRID install still gets the eco switch.
+
+        The state key decodes from register 110 by the installed pylxpweb
+        (0.10.0b15 pins the bit-15 mapping), so no cloud route is required.
+        """
+        coordinator = _mock_coordinator(
+            has_http=False,
+            has_local=True,
+            local_only=True,
+            model="12000XP",
+            device_data={"features": {"inverter_family": INVERTER_FAMILY_EG4_OFFGRID}},
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        type_names = [type(e).__name__ for e in entities]
+        assert "EG4BatteryEcoModeSwitch" in type_names
+
+    @pytest.mark.asyncio
+    async def test_setup_offgrid_no_transport_skips_battery_eco_switch(self, hass):
+        """EG4_OFFGRID without any usable route gets no eco switch."""
+        coordinator = _mock_coordinator(
+            has_http=False,
+            has_local=False,
+            model="12000XP",
+            device_data={"features": {"inverter_family": INVERTER_FAMILY_EG4_OFFGRID}},
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        type_names = [type(e).__name__ for e in entities]
+        assert "EG4BatteryEcoModeSwitch" not in type_names
+
+    @pytest.mark.asyncio
+    async def test_setup_hybrid_family_skips_battery_eco_switch(self, hass):
+        """Grid-tied families do not get the OFFGRID-specific eco toggle.
+
+        The bit-15 mapping is hardware-verified on the 12000XP lineage only;
+        the 18kPV lineage carries a different register-110 layout, so the
+        family gate stays closed for other families.
+        """
+        coordinator = _mock_coordinator(
+            has_http=True,
+            model="FlexBOSS21",
+            device_data={"features": {"inverter_family": "EG4_HYBRID"}},
+        )
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+
+        entities = []
+        await async_setup_entry(hass, entry, lambda e, **kw: entities.extend(e))
+
+        type_names = [type(e).__name__ for e in entities]
+        assert "EG4BatteryEcoModeSwitch" not in type_names
 
     @pytest.mark.asyncio
     async def test_setup_unknown_model_and_family_creates_no_controls(self, hass):
@@ -2349,6 +2437,130 @@ class TestOffGridModeSwitch:
             await switch.async_turn_on()
 
 
+# ── BatteryEcoModeSwitch ─────────────────────────────────────────
+
+
+class TestBatteryEcoModeSwitch:
+    """Test Battery ECO Mode switch entity (FUNC_BATTERY_ECO_EN, reg 110 bit 15)."""
+
+    def test_is_on_from_params(self):
+        """FUNC_BATTERY_ECO_EN parameter drives is_on."""
+        coordinator = _mock_coordinator(parameters={"FUNC_BATTERY_ECO_EN": True})
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        assert switch.is_on is True
+
+    def test_is_on_false_when_param_present_false(self):
+        """A present falsy value is a real 'disabled'."""
+        coordinator = _mock_coordinator(parameters={"FUNC_BATTERY_ECO_EN": False})
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        assert switch.is_on is False
+
+    def test_is_on_unknown_when_param_missing(self):
+        """Absent FUNC_BATTERY_ECO_EN is UNKNOWN (None), never a fake OFF."""
+        coordinator = _mock_coordinator()
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        assert switch.is_on is None
+
+    @pytest.mark.asyncio
+    async def test_turn_on_local(self):
+        """Local transport: writes the named parameter (bit-15 reg 110)."""
+        coordinator = _mock_coordinator(has_local=True)
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        _prep(switch)
+        await switch.async_turn_on()
+
+        coordinator.write_named_parameter.assert_called_once_with(
+            PARAM_FUNC_BATTERY_ECO_EN, True, serial="1234567890"
+        )
+
+    @pytest.mark.asyncio
+    async def test_turn_off_local(self):
+        """Local transport: turn_off writes False."""
+        coordinator = _mock_coordinator(has_local=True)
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        _prep(switch)
+        await switch.async_turn_off()
+
+        coordinator.write_named_parameter.assert_called_once_with(
+            PARAM_FUNC_BATTERY_ECO_EN, False, serial="1234567890"
+        )
+
+    @pytest.mark.asyncio
+    async def test_turn_on_cloud(self):
+        """Cloud only: writes via control_function(serial, param, True)."""
+        coordinator = _mock_coordinator(has_local=False, has_http=True)
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        _prep(switch)
+        await switch.async_turn_on()
+
+        coordinator.client.api.control.control_function.assert_called_once_with(
+            "1234567890", PARAM_FUNC_BATTERY_ECO_EN, True
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_transport_raises(self):
+        """No local or HTTP raises HomeAssistantError."""
+        coordinator = _mock_coordinator(has_local=False, has_http=False)
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        _prep(switch)
+
+        with pytest.raises(HomeAssistantError, match="No transport available"):
+            await switch.async_turn_on()
+
+    def test_available_false_when_state_key_absent(self):
+        """No FUNC_BATTERY_ECO_EN in the cache yet -> unavailable, not fake OFF."""
+        coordinator = _mock_coordinator(parameters={})
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        assert switch.available is False
+
+    def test_available_true_when_state_key_present(self):
+        """A decodable parameter cache keeps the switch available."""
+        coordinator = _mock_coordinator(parameters={"FUNC_BATTERY_ECO_EN": True})
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        assert switch.available is True
+
+    def test_available_false_when_local_cache_stale_link_down(self):
+        """A local-raw cache over a link now marked down is stale state.
+
+        The base contract keeps controls available through a transport
+        link-down (setpoints, not live readings), but this switch's state
+        IS the parameter cache: while the only route that fills it is
+        down, the displayed value is stale, so the switch goes
+        unavailable instead of reporting state it cannot refresh.
+        """
+        coordinator = _mock_coordinator(
+            has_local=True,
+            link_down=True,
+            parameters={"FUNC_BATTERY_ECO_EN": True},
+        )
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        assert switch.available is False
+
+    def test_available_true_when_link_down_but_cache_is_cloud_derived(self):
+        """Link down with a cloud-derived cache stays available.
+
+        The local transport attach failed (transport is None), so the
+        parameter cache comes from the cloud and the cloud can still
+        refresh it — a dead local bus must not blank a working cloud state.
+        """
+        coordinator = _mock_coordinator(
+            has_local=True,
+            has_http=True,
+            link_down=True,
+            transport_attached=False,
+            parameters={"FUNC_BATTERY_ECO_EN": True},
+        )
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        assert switch.available is True
+
+    def test_available_true_with_optimistic_state(self):
+        """Mid-write optimistic state keeps the switch available."""
+        coordinator = _mock_coordinator(parameters={})
+        switch = EG4BatteryEcoModeSwitch(coordinator, "1234567890")
+        switch._optimistic_state = True  # noqa: SLF001 - test scaffolding
+        assert switch.available is True
+
+
 # ── ChargeLastSwitch ─────────────────────────────────────────────────
 
 
@@ -3212,12 +3424,16 @@ class TestOffgridBatteryBackupGating:
         # control-capable families, #288). AC Couple (GH #471), Grid Always
         # On (GH #484) and Smart Load (GH #499) are cloud-gated and
         # family-neutral — present here too, and this is the family that
-        # asked for both smart-load controls (12000XP).
+        # asked for both smart-load controls (12000XP). Battery ECO Mode
+        # (reg 110 bit 15, hardware-verified on this family) is an explicit
+        # class — no ha_entity_key on the register definition — and joins
+        # the set here.
         assert self._switch_keys(entities) == {
             "quick_charge",
             "ac_couple",
             "battery_backup",
             "off_grid_mode",
+            "battery_eco_mode",
             "charge_last",
             "forced_chg_en",
             "share_battery",

@@ -28,6 +28,12 @@ PARAM_FUNC_FEED_IN_GRID_EN = "FUNC_FEED_IN_GRID_EN"
 
 # Bit field parameter names (register 110)
 PARAM_FUNC_GREEN_EN = "FUNC_GREEN_EN"
+# Battery ECO Mode (reg 110 bit 15, pylxpweb PR #220) — hardware-verified
+# on the 12000XP (raw 0x0080 <-> 0x8080 live toggle); lxp_modbus EcoModeEn
+# agrees. The register definition carries no ha_entity_key, so the generic
+# entity factory cannot expose it — the explicit EG4BatteryEcoModeSwitch is
+# the only surface for this toggle.
+PARAM_FUNC_BATTERY_ECO_EN = "FUNC_BATTERY_ECO_EN"
 # Charge Last (reg 110 bit 4): when enabled, PV surplus serves loads/export
 # first and charges the battery last (issue #177).
 PARAM_FUNC_CHARGE_LAST = "FUNC_CHARGE_LAST"

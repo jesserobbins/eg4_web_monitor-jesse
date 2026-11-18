@@ -30,6 +30,7 @@ from .const import (
     PARAM_FUNC_AC_COUPLING_FUNCTION,
     PARAM_FUNC_BAT_SHARED,
     PARAM_FUNC_BATTERY_BACKUP_CTRL,
+    PARAM_FUNC_BATTERY_ECO_EN,
     PARAM_FUNC_CHARGE_LAST,
     PARAM_FUNC_EPS_EN,
     PARAM_FUNC_FEED_IN_GRID_EN,
@@ -282,6 +283,25 @@ def _create_switch_entities(
 
                 # Add off-grid mode switch (Green Mode)
                 entities.append(EG4OffGridModeSwitch(coordinator, serial))
+
+                # Battery ECO Mode (register 110 bit 15, pylxpweb PR #220).
+                # The register definition carries no ha_entity_key, so the
+                # generic entity factory cannot expose it; this explicit
+                # switch is the only surface for the toggle. Created only on
+                # EG4_OFFGRID — the 18kPV lineage's register-110 layout does
+                # not use this bit position for the eco toggle — wherever a
+                # route exists: the state key decodes from register 110 by
+                # the installed pylxpweb on LOCAL/HYBRID, and the cloud
+                # function-control API carries FUNC_BATTERY_ECO_EN on
+                # cloud-capable installs.
+                if is_offgrid_family(device_data) and (
+                    coordinator.has_http_api()
+                    or (
+                        coordinator.has_configured_local_transport(serial)
+                        and _local_params_can_carry(PARAM_FUNC_BATTERY_ECO_EN)
+                    )
+                ):
+                    entities.append(EG4BatteryEcoModeSwitch(coordinator, serial))
 
                 # Add working mode switches
                 sellback_supported = supports_grid_sellback(device_data)
@@ -1292,6 +1312,116 @@ class EG4OffGridModeSwitch(EG4BaseSwitch):
             value=False,
             cloud_enable_method="enable_green_mode",
             cloud_disable_method="disable_green_mode",
+        )
+
+
+class EG4BatteryEcoModeSwitch(EG4BaseSwitch):
+    """Switch to control Battery ECO Mode on EG4_OFFGRID hardware.
+
+    Battery ECO Mode (FUNC_BATTERY_ECO_EN, register 110 bit 15) reduces
+    battery cycling for longevity. pylxpweb >= 0.9.40 pins the bit-15
+    mapping (hardware-verified on the 12000XP, PR #220), so state reads
+    straight from the parameter cache and writes go through the named
+    parameter route — the transport's operation-lock-held
+    read-modify-write, safe against a concurrent sibling-bit update on a
+    register that also carries microgrid, green mode, buzzer and
+    working-mode bits.
+
+    Created only on EG4_OFFGRID: the register-110 layout differs on the
+    18kPV lineage, where bit 15 is not the eco toggle.
+    """
+
+    def __init__(
+        self,
+        coordinator: EG4DataUpdateCoordinator,
+        serial: str,
+    ) -> None:
+        """Initialize the Battery ECO Mode switch."""
+        super().__init__(
+            coordinator=coordinator,
+            serial=serial,
+            entity_key="battery_eco_mode",
+            name="Battery ECO Mode",
+            icon="mdi:leaf",
+            entity_category=EntityCategory.CONFIG,
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if battery eco mode is enabled, None when unknown.
+
+        An absent FUNC_BATTERY_ECO_EN key means UNKNOWN, not off: a local
+        parameter refresh replaces the serial's parameter dict wholesale
+        (coordinator_mixins._refresh_device_parameters), so a partial read
+        that missed register 110 must not flip a cloud-confirmed "on" to
+        "off".
+        """
+        # Use optimistic state if available (for immediate UI feedback)
+        if self._optimistic_state is not None:
+            return self._optimistic_state
+
+        value = self._parameter_data.get(PARAM_FUNC_BATTERY_ECO_EN)
+        if value is None:
+            return None
+        return bool(value)
+
+    @property
+    def available(self) -> bool:
+        """Return if the switch is available.
+
+        Unavailable while the state key is absent (no value has ever
+        arrived) rather than presenting a confident, toggleable OFF — the
+        same guarantee the working modes' ``requires_known_state`` opt-in
+        gives (GH #484 precedent). Also unavailable while the parameter
+        cache is local-raw AND the local link is marked down: this
+        switch's state IS the parameter cache, and while the only route
+        that fills it is down the displayed value is stale. A cloud-derived
+        cache stays available through a local link-down — the cloud can
+        still refresh it and absorb writes via the function-control API.
+        """
+        if not super().available:
+            return False
+        if self._optimistic_state is not None:
+            return True
+        if PARAM_FUNC_BATTERY_ECO_EN not in self._parameter_data:
+            return False
+        if (
+            self.coordinator.has_local_transport(self._serial)
+            and self.coordinator.params_are_local_raw(self._serial)
+            and self.coordinator.is_transport_link_down(self._serial)
+        ):
+            return False
+        return True
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return extra state attributes."""
+        attributes: dict[str, Any] = {}
+
+        if self._parameter_data:
+            func_battery_eco_en = self._parameter_data.get(PARAM_FUNC_BATTERY_ECO_EN)
+            if func_battery_eco_en is not None:
+                attributes["func_battery_eco_en"] = func_battery_eco_en
+
+        if self._optimistic_state is not None:
+            attributes["optimistic_state"] = self._optimistic_state
+
+        return attributes if attributes else None
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable battery eco mode."""
+        await self._execute_local_with_fallback(
+            action_name="battery eco mode",
+            parameter=PARAM_FUNC_BATTERY_ECO_EN,
+            value=True,
+        )
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable battery eco mode."""
+        await self._execute_local_with_fallback(
+            action_name="battery eco mode",
+            parameter=PARAM_FUNC_BATTERY_ECO_EN,
+            value=False,
         )
 
 

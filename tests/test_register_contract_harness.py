@@ -96,6 +96,7 @@ from custom_components.eg4_web_monitor.const.modbus import (
     PARAM_FUNC_BAT_DISCHARGE_CONTROL,
     PARAM_FUNC_BAT_SHARED,
     PARAM_FUNC_BATTERY_BACKUP_CTRL,
+    PARAM_FUNC_BATTERY_ECO_EN,
     PARAM_FUNC_CHARGE_LAST,
     PARAM_FUNC_EPS_EN,
     PARAM_FUNC_FEED_IN_GRID_EN,
@@ -1363,6 +1364,14 @@ _CONTROL_REGISTER_CONTRACT: dict[str, tuple[int, int | None]] = {
     # historic bit 8 was a wrong decode — HYBRID/LOCAL toggles wrote the
     # PVCT-sample region and never moved green mode (#476/#194).
     PARAM_FUNC_GREEN_EN: (110, 14),
+    # Battery ECO Mode (pylxpweb PR #220): reg 110 bit 15 — live toggle
+    # on the 12000XP (raw 0x0080 <-> 0x8080, single-bit delta, EG4 cloud
+    # decode in lockstep; lxp_modbus EcoModeEn agrees). First confirmed by
+    # a live Modbus probe on EG4_OFFGRID firmware ceaa-0709 when pylxpweb
+    # 0.9.27 still mapped the flag to bit 9; the library pin matches the
+    # probe. Exposed only on EG4_OFFGRID (18kPV lineage uses a different
+    # reg-110 layout).
+    PARAM_FUNC_BATTERY_ECO_EN: (110, 15),
     PARAM_FUNC_GRID_PEAK_SHAVING: (179, 7),
     # Export PV Only (GH #135): reg 179 bit 3, pinned 2026-06-12
     # ~16:05-16:07 PT via authorized live cloud toggles raw-verified on BOTH
